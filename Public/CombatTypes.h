@@ -86,11 +86,30 @@ struct FDamageInfo
 
 	/**
 	 * Canonical calculated raw damage before armor or resistance mitigation.
-	 * Multiplier is clamped to a minimum of 0.0 to prevent negative damage.
+	 * Guards against non-finite values (NaN / Inf) and clamps BaseDamage and Multiplier to >= 0.0.
+	 * Preserves intentional zero damage and applies the multiplier exactly once.
 	 */
 	FORCEINLINE float GetCalculatedRawDamage() const
 	{
-		return BaseDamage * FMath::Max(0.0f, DamageMultiplier);
+		if (!FMath::IsFinite(BaseDamage) || !FMath::IsFinite(DamageMultiplier))
+		{
+			return 0.0f;
+		}
+		const float ValidBase = FMath::Max(0.0f, BaseDamage);
+		const float ValidMultiplier = FMath::Max(0.0f, DamageMultiplier);
+		return ValidBase * ValidMultiplier;
+	}
+
+	/**
+	 * Normalizes all numerical fields in-place to ensure no non-finite or negative values propagate.
+	 * Preserves legitimate zero damage while guaranteeing non-negative finite bounds.
+	 */
+	FORCEINLINE void Normalize()
+	{
+		BaseDamage = (!FMath::IsFinite(BaseDamage) || BaseDamage < 0.0f) ? 0.0f : BaseDamage;
+		DamageMultiplier = (!FMath::IsFinite(DamageMultiplier) || DamageMultiplier < 0.0f) ? 0.0f : DamageMultiplier;
+		PoiseDamage = (!FMath::IsFinite(PoiseDamage) || PoiseDamage < 0.0f) ? 0.0f : PoiseDamage;
+		KnockbackImpulse = (!FMath::IsFinite(KnockbackImpulse) || KnockbackImpulse < 0.0f) ? 0.0f : KnockbackImpulse;
 	}
 };
 
@@ -135,6 +154,10 @@ struct FWeaponConfig : public FTableRowBase
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapon|Trace")
 	float TraceRadius = 14.0f;
+
+	/** Maximum performance-capped interpolation substeps per tick for fast weapon rotations / large frame deltas */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapon|Trace", meta = (ClampMin = "1", ClampMax = "8"))
+	int32 MaxTraceSubsteps = 4;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapon|Trace")
 	TEnumAsByte<ECollisionChannel> TraceCollisionChannel = ECC_Pawn;

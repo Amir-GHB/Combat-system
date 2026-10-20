@@ -21,8 +21,9 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnAttackEndedSignature);
  * - Manages simultaneously owned weapons and safe, deterministic weapon switching.
  * - Robust state machine: Strictly decoupled ActiveSectionIndex vs PendingSectionIndex.
  * - Time-stamped input buffer with automatic expiration and single-transition-per-window policy.
- * - Attack generation tokens to guard against stale montage callbacks.
+ * - Attack generation tokens & instance IDs to guard against stale montage callbacks.
  * - Dedicated ActiveAttackWeapon tracking ensuring cleanup never targets the wrong weapon.
+ * - Safe interruption and reset mechanics that stop active montages without re-entrant recursion.
  * - Dynamic montage section discovery (zero hardcoded section names or counts).
  */
 UCLASS(ClassGroup=(Combat), meta=(BlueprintSpawnableComponent))
@@ -99,6 +100,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Combat|Attack")
 	void ResetCombo();
 
+	UFUNCTION(BlueprintCallable, Category = "Combat|Attack")
+	void StopActiveAttack(bool bInterrupted = true, bool bStopMontage = true, float BlendOutTime = 0.2f);
+
 	// -----------------------------------------------------------
 	// State Queries
 	// -----------------------------------------------------------
@@ -150,8 +154,17 @@ protected:
 	UPROPERTY(Transient)
 	TWeakObjectPtr<AWeaponBase> ActiveAttackWeapon = nullptr;
 
-	/** Attack generation token: increments on every new attack to reject stale montage callbacks */
+	/** Attack generation counter: increments on every new attack */
 	uint64 CurrentAttackToken = 0;
+
+	/** Active attack token currently running; only callbacks matching this token are accepted */
+	uint64 ActiveAttackToken = 0;
+
+	/** Unique instance ID of the active montage playback */
+	int32 ActiveMontageInstanceId = INDEX_NONE;
+
+	/** Guard flag preventing recursive cleanup when Montage_Stop fires callbacks synchronously */
+	bool bIsStoppingAttack = false;
 
 	/** Timestamp of the last valid attack input */
 	double LastAttackInputTimestamp = -1.0;
@@ -169,11 +182,14 @@ protected:
 	UFUNCTION()
 	void HandleMontageBlendingOut(UAnimMontage* Montage, bool bInterrupted);
 
+	/** Instance-specific delegates bound per Montage_Play containing the specific AttackToken */
+	void OnMontageInstanceEnded(UAnimMontage* Montage, bool bInterrupted, uint64 AttackToken);
+	void OnMontageInstanceBlendingOut(UAnimMontage* Montage, bool bInterrupted, uint64 AttackToken);
+
 	bool StartNewCombo();
 	bool TryQueueSectionTransition();
 	void CommitSectionTransition(int32 NewSectionIndex, FName NewSectionName);
 	void SetCombatState(ECombatState NewState);
 	void ClearInputBuffer();
 	bool IsInputBufferValid() const;
-	void StopActiveAttack(bool bInterrupted);
 };

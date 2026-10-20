@@ -20,29 +20,26 @@ float UDamageHandlerComponent::ApplyDamage_Implementation(AActor* InstigatorActo
 {
 	if (bIsDead) return 0.0f;
 
-	// 1. Calculate raw damage using canonical formula
-	const float RawDamage = DamageInfo.GetCalculatedRawDamage();
+	// Normalize incoming damage struct to guarantee non-negative finite bounds
+	FDamageInfo NormalizedInfo = DamageInfo;
+	NormalizedInfo.Normalize();
 
-	// If raw damage is 0 or negative (e.g. non-damaging utility or invulnerable hit), return 0.
-	// Do not artificially clamp to 1.0f.
-	if (RawDamage <= 0.0f)
-	{
-		return 0.0f;
-	}
+	// 1. Calculate raw damage using canonical formula
+	const float RawDamage = NormalizedInfo.GetCalculatedRawDamage();
 
 	// 2. Armor mitigation formula: FinalDamage = RawDamage * (100 / (100 + Armor))
 	const float MitigationFactor = 100.0f / (100.0f + FMath::Max(0.0f, Armor));
 	const float FinalDamage = FMath::Max(0.0f, RawDamage * MitigationFactor);
 
-	// 3. Poise reduction
-	CurrentPoise = FMath::Clamp(CurrentPoise - DamageInfo.PoiseDamage, 0.0f, MaxPoise);
+	// 3. Poise reduction (applies even on 0-damage hits such as utility or stagger attacks)
+	CurrentPoise = FMath::Clamp(CurrentPoise - NormalizedInfo.PoiseDamage, 0.0f, MaxPoise);
 
-	// 4. Health deduction
+	// 4. Health deduction (preserves legitimate 0-damage hits)
 	CurrentHealth = FMath::Clamp(CurrentHealth - FinalDamage, 0.0f, MaxHealth);
 
 	// 5. Broadcast delegates
 	OnHealthChanged.Broadcast(CurrentHealth, MaxHealth);
-	OnDamageTaken.Broadcast(FinalDamage, InstigatorActor, DamageInfo, HitResult);
+	OnDamageTaken.Broadcast(FinalDamage, InstigatorActor, NormalizedInfo, HitResult);
 
 	// 6. Death detection
 	if (CurrentHealth <= 0.0f && !bIsDead)

@@ -87,7 +87,15 @@ void AWeaponBase::SampleSocketLocations(TMap<FName, FVector>& OutLocations) cons
 
 	for (const FName& SocketName : ValidatedTraceSockets)
 	{
-		OutLocations.Add(SocketName, WeaponMesh->GetSocketLocation(SocketName));
+		const FVector Loc = WeaponMesh->GetSocketLocation(SocketName);
+		if (!Loc.ContainsNaN())
+		{
+			OutLocations.Add(SocketName, Loc);
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[AWeaponBase::SampleSocketLocations] Socket '%s' returned NaN location!"), *SocketName.ToString());
+		}
 	}
 }
 
@@ -96,10 +104,11 @@ void AWeaponBase::BeginTrace()
 	if (!WeaponMesh)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[AWeaponBase::BeginTrace] Cannot begin trace: WeaponMesh is null on %s"), *GetName());
+		bIsTracing = false;
 		return;
 	}
 
-	// Validate sockets on the static mesh before enabling trace
+	// Validate sockets on the mesh before enabling trace
 	ValidatedTraceSockets.Empty();
 	for (const FName& SocketName : WeaponConfig.TraceSocketNames)
 	{
@@ -123,18 +132,25 @@ void AWeaponBase::BeginTrace()
 
 	bIsTracing = true;
 	DamagedActorsThisSwing.Empty();
+	PreviousSocketLocations.Empty();
 	SampleSocketLocations(PreviousSocketLocations);
 }
 
 void AWeaponBase::TickTrace()
 {
-	if (!bIsTracing || !WeaponMesh || ValidatedTraceSockets.IsEmpty()) return;
+	if (!bIsTracing || ValidatedTraceSockets.IsEmpty()) return;
 
 	UWorld* World = GetWorld();
 	if (!World) return;
 
 	TMap<FName, FVector> CurrentSocketLocations;
 	SampleSocketLocations(CurrentSocketLocations);
+
+	if (CurrentSocketLocations.IsEmpty() || PreviousSocketLocations.IsEmpty())
+	{
+		PreviousSocketLocations = CurrentSocketLocations;
+		return;
+	}
 
 	TArray<AActor*> ActorsToIgnore;
 	ActorsToIgnore.Add(this);
@@ -147,75 +163,102 @@ void AWeaponBase::TickTrace()
 	FCollisionQueryParams QueryParams(TEXT("MeleeWeaponTrace"), false, this);
 	QueryParams.AddIgnoredActors(ActorsToIgnore);
 
-	TArray<FHitResult> AllHitResults;
-
-	// 1. Continuous Sweeps: Sweep each socket from PreviousLocation to CurrentLocation
+	// Calculate maximum displacement across all sockets between previous tick and current tick
+	float MaxDisplacement = 0.0f;
 	for (const auto& Pair : CurrentSocketLocations)
 	{
-		const FName& SocketName = Pair.Key;
-		const FVector& CurrentPos = Pair.Value;
-		const FVector* PrevPosPtr = PreviousSocketLocations.Find(SocketName);
-		const FVector PrevPos = PrevPosPtr ? *PrevPosPtr : CurrentPos;
-
-		TArray<FHitResult> SocketHits;
-		World->SweepMultiByChannel(
-			SocketHits,
-			PrevPos,
-			CurrentPos,
-			FQuat::Identity,
-			WeaponConfig.TraceCollisionChannel,
-			SphereShape,
-			QueryParams
-		);
-
-		AllHitResults.Append(SocketHits);
-
-		if (WeaponConfig.bDrawDebugTraces)
+		if (const FVector* PrevPosPtr = PreviousSocketLocations.Find(Pair.Key))
 		{
-			DrawDebugCapsule(
-				World,
-				(PrevPos + CurrentPos) * 0.5f,
-				(PrevPos - CurrentPos).Size() * 0.5f + WeaponConfig.TraceRadius,
-				WeaponConfig.TraceRadius,
-				FRotationMatrix::MakeFromZ(CurrentPos - PrevPos).ToQuat(),
-				FColor::Green,
-				false,
-				0.4f
-			);
+			MaxDisplacement = FMath::Max(MaxDisplacement, FVector::Dist(*PrevPosPtr, Pair.Value));
 		}
 	}
 
-	// 2. Segment & Diagonal Sweeps: Sweep between adjacent sockets on current frame
-	// and cross-sweep diagonals (PrevS1->CurrS2 and PrevS2->CurrS1) to cover fast rotational weapon sweeps
-	if (ValidatedTraceSockets.Num() >= 2)
+	// Performance-capped substep calculation for large frame deltas or fast rotations
+	const int32 NumSubsteps = FMath::Clamp(
+		FMath::CeilToInt(MaxDisplacement / FMath::Max(1.0f, WeaponConfig.TraceRadius * 2.0f)),
+		1,
+		FMath::Max(1, WeaponConfig.MaxTraceSubsteps)
+	);
+
+	TArray<FHitResult> AllHitResults;
+
+	// Loop through substeps
+	for (int32 Substep = 1; Substep <= NumSubsteps; ++Substep)
 	{
-		for (int32 i = 0; i < ValidatedTraceSockets.Num() - 1; ++i)
+		const float AlphaPrev = float(Substep - 1) / float(NumSubsteps);
+		const float AlphaCurr = float(Substep) / float(NumSubsteps);
+
+		// Sample interpolated socket positions for this substep
+		TMap<FName, FVector> SubstepPrevLocations;
+		TMap<FName, FVector> SubstepCurrLocations;
+
+		for (const FName& SName : ValidatedTraceSockets)
 		{
-			const FName& S1 = ValidatedTraceSockets[i];
-			const FName& S2 = ValidatedTraceSockets[i + 1];
-
-			const FVector* CurrP1 = CurrentSocketLocations.Find(S1);
-			const FVector* CurrP2 = CurrentSocketLocations.Find(S2);
-			const FVector* PrevP1 = PreviousSocketLocations.Find(S1);
-			const FVector* PrevP2 = PreviousSocketLocations.Find(S2);
-
-			if (CurrP1 && CurrP2)
+			const FVector* P0 = PreviousSocketLocations.Find(SName);
+			const FVector* P1 = CurrentSocketLocations.Find(SName);
+			if (P0 && P1)
 			{
-				// Current blade segment
-				TArray<FHitResult> SegmentHits;
-				World->SweepMultiByChannel(SegmentHits, *CurrP1, *CurrP2, FQuat::Identity, WeaponConfig.TraceCollisionChannel, SphereShape, QueryParams);
-				AllHitResults.Append(SegmentHits);
+				SubstepPrevLocations.Add(SName, FMath::Lerp(*P0, *P1, AlphaPrev));
+				SubstepCurrLocations.Add(SName, FMath::Lerp(*P0, *P1, AlphaCurr));
+			}
+		}
 
-				// Cross diagonal sweeps to catch angular rotational slices
-				if (PrevP1 && PrevP2)
+		// 1. Continuous Sweeps along each socket's motion path in this substep (supports 1 or more sockets)
+		for (const FName& SName : ValidatedTraceSockets)
+		{
+			const FVector* PPrev = SubstepPrevLocations.Find(SName);
+			const FVector* PCurr = SubstepCurrLocations.Find(SName);
+			if (PPrev && PCurr)
+			{
+				TArray<FHitResult> SocketHits;
+				World->SweepMultiByChannel(SocketHits, *PPrev, *PCurr, FQuat::Identity, WeaponConfig.TraceCollisionChannel, SphereShape, QueryParams);
+				AllHitResults.Append(SocketHits);
+
+				if (WeaponConfig.bDrawDebugTraces)
 				{
-					TArray<FHitResult> CrossHits1;
-					World->SweepMultiByChannel(CrossHits1, *PrevP1, *CurrP2, FQuat::Identity, WeaponConfig.TraceCollisionChannel, SphereShape, QueryParams);
-					AllHitResults.Append(CrossHits1);
+					DrawDebugCapsule(
+						World,
+						(*PPrev + *PCurr) * 0.5f,
+						(*PPrev - *PCurr).Size() * 0.5f + WeaponConfig.TraceRadius,
+						WeaponConfig.TraceRadius,
+						FRotationMatrix::MakeFromZ(*PCurr - *PPrev).ToQuat(),
+						FColor::Green,
+						false,
+						0.4f
+					);
+				}
+			}
+		}
 
-					TArray<FHitResult> CrossHits2;
-					World->SweepMultiByChannel(CrossHits2, *PrevP2, *CurrP1, FQuat::Identity, WeaponConfig.TraceCollisionChannel, SphereShape, QueryParams);
-					AllHitResults.Append(CrossHits2);
+		// 2. Segment & Cross-Diagonal Sweeps along blade geometry (for 2 or more sockets)
+		if (ValidatedTraceSockets.Num() >= 2)
+		{
+			for (int32 i = 0; i < ValidatedTraceSockets.Num() - 1; ++i)
+			{
+				const FName& S1 = ValidatedTraceSockets[i];
+				const FName& S2 = ValidatedTraceSockets[i + 1];
+
+				const FVector* P1Curr = SubstepCurrLocations.Find(S1);
+				const FVector* P2Curr = SubstepCurrLocations.Find(S2);
+				const FVector* P1Prev = SubstepPrevLocations.Find(S1);
+				const FVector* P2Prev = SubstepPrevLocations.Find(S2);
+
+				if (P1Curr && P2Curr)
+				{
+					TArray<FHitResult> SegmentHits;
+					World->SweepMultiByChannel(SegmentHits, *P1Curr, *P2Curr, FQuat::Identity, WeaponConfig.TraceCollisionChannel, SphereShape, QueryParams);
+					AllHitResults.Append(SegmentHits);
+
+					if (P1Prev && P2Prev)
+					{
+						TArray<FHitResult> CrossHits1;
+						World->SweepMultiByChannel(CrossHits1, *P1Prev, *P2Curr, FQuat::Identity, WeaponConfig.TraceCollisionChannel, SphereShape, QueryParams);
+						AllHitResults.Append(CrossHits1);
+
+						TArray<FHitResult> CrossHits2;
+						World->SweepMultiByChannel(CrossHits2, *P2Prev, *P1Curr, FQuat::Identity, WeaponConfig.TraceCollisionChannel, SphereShape, QueryParams);
+						AllHitResults.Append(CrossHits2);
+					}
 				}
 			}
 		}
@@ -278,6 +321,9 @@ void AWeaponBase::ProcessHit(const FHitResult& HitResult)
 	DamageInfo.WeaponType = WeaponConfig.WeaponType;
 	DamageInfo.DamageCauser = this;
 	DamageInfo.InstigatorWeapon = this;
+
+	// Normalize damage payload ensuring non-negative finite bounds
+	DamageInfo.Normalize();
 
 	// Calculate unified raw damage consistently across both handler and native fallback
 	const float CalculatedRawDamage = DamageInfo.GetCalculatedRawDamage();

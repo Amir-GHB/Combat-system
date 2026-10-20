@@ -71,7 +71,10 @@ float ACombatCharacterBase::TakeDamage(float DamageAmount, struct FDamageEvent c
 	{
 		FDamageInfo DamageInfo;
 		DamageInfo.BaseDamage = ActualDamage;
+		DamageInfo.DamageMultiplier = 1.0f; // Multiplier already factored in prior to TakeDamage
 		DamageInfo.DamageCauser = DamageCauser;
+		DamageInfo.Normalize();
+
 		FHitResult EmptyHit;
 		DamageHandlerComponent->ApplyDamage(DamageCauser, this, DamageInfo, EmptyHit);
 	}

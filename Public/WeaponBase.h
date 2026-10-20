@@ -84,6 +84,7 @@ public:
 	FORCEINLINE EWeaponType GetWeaponType() const { return WeaponConfig.WeaponType; }
 	FORCEINLINE UAnimMontage* GetComboMontage() const { return WeaponConfig.AttackComboMontage; }
 	FORCEINLINE const FWeaponConfig& GetConfig() const { return WeaponConfig; }
+	FORCEINLINE const TArray<FName>& GetValidatedTraceSockets() const { return ValidatedTraceSockets; }
 
 protected:
 	UPROPERTY(Transient)
@@ -108,6 +109,6 @@ protected:
 	/** Processes a validated hit and dispatches damage to the target */
 	virtual void ProcessHit(const FHitResult& HitResult);
 
-	/** Helper to sample current socket locations */
+	/** Helper to sample current socket locations with NaN / validity checks */
 	virtual void SampleSocketLocations(TMap<FName, FVector>& OutLocations) const;
 };

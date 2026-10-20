@@ -15,7 +15,6 @@ public:
 	AWeapon_Unarmed();
 
 	virtual void BeginTrace() override;
-	virtual void TickTrace() override;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Unarmed|Sockets")
 	TArray<FName> SkeletalTraceSockets = { FName("Hand_R_Fist"), FName("Hand_L_Fist"), FName("Foot_R_Socket") };

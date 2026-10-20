@@ -51,7 +51,7 @@ void UCombatComponent::BeginPlay()
 	// Equip starting weapon
 	EquipWeapon(DefaultWeaponType);
 
-	// Bind montage lifecycle delegates
+	// Bind global montage lifecycle delegates on AnimInstance as secondary listener
 	if (OwningCharacter->GetMesh() && OwningCharacter->GetMesh()->GetAnimInstance())
 	{
 		UAnimInstance* AnimInstance = OwningCharacter->GetMesh()->GetAnimInstance();
@@ -72,7 +72,7 @@ void UCombatComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		}
 	}
 
-	StopActiveAttack(true);
+	StopActiveAttack(true, true, 0.0f);
 	Super::EndPlay(EndPlayReason);
 }
 
@@ -232,11 +232,11 @@ bool UCombatComponent::StartNewCombo()
 	UAnimInstance* AnimInstance = OwningCharacter->GetMesh() ? OwningCharacter->GetMesh()->GetAnimInstance() : nullptr;
 	if (!AnimInstance) return false;
 
-	// Invalidate previous attack context
-	StopActiveAttack(false);
+	// Safely retire any ongoing attack first, stopping active montage playback and canceling traces
+	StopActiveAttack(true, true, 0.1f);
 
-	// Increment attack generation token
-	++CurrentAttackToken;
+	// Increment and set generation token for this new attack instance
+	ActiveAttackToken = ++CurrentAttackToken;
 
 	TotalSectionsInMontage = Montage->CompositeSections.Num();
 	ActiveSectionIndex = 0;
@@ -253,9 +253,21 @@ bool UCombatComponent::StartNewCombo()
 	if (Duration <= 0.0f)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[UCombatComponent] Montage_Play failed on %s!"), *Montage->GetName());
-		StopActiveAttack(true);
+		StopActiveAttack(true, false);
 		return false;
 	}
+
+	// Bind instance-specific callbacks with generation token to guarantee isolation from stale playbacks
+	FOnMontageEnded EndDelegate;
+	EndDelegate.BindUObject(this, &UCombatComponent::OnMontageInstanceEnded, ActiveAttackToken);
+	AnimInstance->Montage_SetEndDelegate(EndDelegate, Montage);
+
+	FOnMontageBlendingOutStarted BlendDelegate;
+	BlendDelegate.BindUObject(this, &UCombatComponent::OnMontageInstanceBlendingOut, ActiveAttackToken);
+	AnimInstance->Montage_SetBlendingOutDelegate(BlendDelegate, Montage);
+
+	FAnimMontageInstance* Instance = AnimInstance->GetActiveInstanceForMontage(Montage);
+	ActiveMontageInstanceId = Instance ? Instance->GetInstanceId() : INDEX_NONE;
 
 	AnimInstance->Montage_JumpToSection(FirstSection, Montage);
 	AnimInstance->Montage_SetNextSection(FirstSection, NAME_None, Montage);
@@ -294,7 +306,7 @@ bool UCombatComponent::TryQueueSectionTransition()
 	AnimInstance->Montage_SetNextSection(CurrentSecName, NextSecName, ActiveAttackMontage);
 	AnimInstance->Montage_SetNextSection(NextSecName, NAME_None, ActiveAttackMontage);
 
-	// CRITICAL FIX: Keep pending and active section state strictly separate!
+	// Keep pending and active section state strictly separate!
 	// ActiveSectionIndex remains unchanged until the animation actually enters NextIndex.
 	PendingSectionIndex = NextIndex;
 	bTransitionCommittedForWindow = true;
@@ -319,13 +331,13 @@ void UCombatComponent::CommitSectionTransition(int32 NewSectionIndex, FName NewS
 
 void UCombatComponent::NotifySectionEntered(FName SectionName, const UAnimSequenceBase* Animation)
 {
-	if (Animation != ActiveAttackMontage || !ActiveAttackMontage) return;
+	if (Animation != ActiveAttackMontage || !ActiveAttackMontage || ActiveAttackToken == 0) return;
 
 	const int32 FoundIndex = ActiveAttackMontage->GetSectionIndex(SectionName);
 	if (FoundIndex == INDEX_NONE) return;
 
 	// Commit section progression when confirmed by notify
-	if (FoundIndex == PendingSectionIndex || FoundIndex == ActiveSectionIndex + 1)
+	if (FoundIndex == PendingSectionIndex || (PendingSectionIndex == INDEX_NONE && FoundIndex == ActiveSectionIndex + 1))
 	{
 		CommitSectionTransition(FoundIndex, SectionName);
 	}
@@ -333,13 +345,28 @@ void UCombatComponent::NotifySectionEntered(FName SectionName, const UAnimSequen
 
 void UCombatComponent::NotifyComboWindowBegin(const UAnimSequenceBase* Animation)
 {
-	if (Animation != ActiveAttackMontage) return;
+	if (Animation != ActiveAttackMontage || ActiveAttackToken == 0) return;
 
-	// Dual fallback: If section notify wasn't placed, confirm pending section if we progressed
-	if (PendingSectionIndex != INDEX_NONE && ActiveAttackMontage)
+	// Reliable progression confirmation check:
+	// Verify that the AnimInstance has genuinely entered the pending section before advancing state
+	if (PendingSectionIndex != INDEX_NONE && ActiveAttackMontage && OwningCharacter.IsValid() && OwningCharacter->GetMesh())
 	{
-		const FName PendingName = ActiveAttackMontage->GetSectionName(PendingSectionIndex);
-		CommitSectionTransition(PendingSectionIndex, PendingName);
+		if (UAnimInstance* AnimInstance = OwningCharacter->GetMesh()->GetAnimInstance())
+		{
+			const FName CurrentPlayingSection = AnimInstance->Montage_GetCurrentSection(ActiveAttackMontage);
+			const int32 CurrentPlayingIndex = ActiveAttackMontage->GetSectionIndex(CurrentPlayingSection);
+
+			// Advance only if the playback is confirmed to have reached the pending section!
+			if (CurrentPlayingIndex == PendingSectionIndex)
+			{
+				CommitSectionTransition(CurrentPlayingIndex, CurrentPlayingSection);
+			}
+			else
+			{
+				UE_LOG(LogTemp, Verbose, TEXT("[UCombatComponent] Section check: Montage currently at '%s' (index %d), pending index is %d. Not advancing."),
+					*CurrentPlayingSection.ToString(), CurrentPlayingIndex, PendingSectionIndex);
+			}
+		}
 	}
 
 	bComboWindowOpen = true;
@@ -359,7 +386,7 @@ void UCombatComponent::NotifyComboWindowBegin(const UAnimSequenceBase* Animation
 
 void UCombatComponent::NotifyComboWindowEnd(const UAnimSequenceBase* Animation)
 {
-	if (Animation != ActiveAttackMontage) return;
+	if (Animation != ActiveAttackMontage || ActiveAttackToken == 0) return;
 
 	bComboWindowOpen = false;
 
@@ -374,17 +401,20 @@ void UCombatComponent::NotifyComboWindowEnd(const UAnimSequenceBase* Animation)
 	// If no transition was committed, ensure the montage will blend out to idle
 	if (!bTransitionCommittedForWindow && ActiveAttackMontage && ActiveSectionIndex != INDEX_NONE)
 	{
-		if (UAnimInstance* AnimInstance = OwningCharacter->GetMesh()->GetAnimInstance())
+		if (OwningCharacter.IsValid() && OwningCharacter->GetMesh())
 		{
-			const FName CurrentSecName = ActiveAttackMontage->GetSectionName(ActiveSectionIndex);
-			AnimInstance->Montage_SetNextSection(CurrentSecName, NAME_None, ActiveAttackMontage);
+			if (UAnimInstance* AnimInstance = OwningCharacter->GetMesh()->GetAnimInstance())
+			{
+				const FName CurrentSecName = ActiveAttackMontage->GetSectionName(ActiveSectionIndex);
+				AnimInstance->Montage_SetNextSection(CurrentSecName, NAME_None, ActiveAttackMontage);
+			}
 		}
 	}
 }
 
 void UCombatComponent::NotifyMeleeTraceBegin(const UAnimSequenceBase* Animation)
 {
-	if (Animation != ActiveAttackMontage) return;
+	if (Animation != ActiveAttackMontage || ActiveAttackToken == 0) return;
 
 	// Always target the weapon that initiated the attack
 	if (ActiveAttackWeapon.IsValid())
@@ -395,7 +425,7 @@ void UCombatComponent::NotifyMeleeTraceBegin(const UAnimSequenceBase* Animation)
 
 void UCombatComponent::NotifyMeleeTraceTick(const UAnimSequenceBase* Animation, float FrameDeltaTime)
 {
-	if (Animation != ActiveAttackMontage) return;
+	if (Animation != ActiveAttackMontage || ActiveAttackToken == 0) return;
 
 	if (ActiveAttackWeapon.IsValid())
 	{
@@ -405,7 +435,7 @@ void UCombatComponent::NotifyMeleeTraceTick(const UAnimSequenceBase* Animation, 
 
 void UCombatComponent::NotifyMeleeTraceEnd(const UAnimSequenceBase* Animation)
 {
-	if (Animation != ActiveAttackMontage) return;
+	if (Animation != ActiveAttackMontage || ActiveAttackToken == 0) return;
 
 	if (ActiveAttackWeapon.IsValid())
 	{
@@ -415,7 +445,8 @@ void UCombatComponent::NotifyMeleeTraceEnd(const UAnimSequenceBase* Animation)
 
 void UCombatComponent::HandleMontageBlendingOut(UAnimMontage* Montage, bool bInterrupted)
 {
-	if (Montage != ActiveAttackMontage) return;
+	// Guard against callbacks during internal StopActiveAttack or from stale attack tokens
+	if (bIsStoppingAttack || Montage != ActiveAttackMontage || ActiveAttackToken == 0) return;
 
 	SetCombatState(ECombatState::Recovering);
 
@@ -428,10 +459,11 @@ void UCombatComponent::HandleMontageBlendingOut(UAnimMontage* Montage, bool bInt
 
 void UCombatComponent::HandleMontageEnded(UAnimMontage* Montage, bool bInterrupted)
 {
-	// Guard against callbacks from old or different montage instances
-	if (Montage != ActiveAttackMontage) return;
+	// Guard against callbacks during internal StopActiveAttack or from stale attack tokens
+	if (bIsStoppingAttack || Montage != ActiveAttackMontage || ActiveAttackToken == 0) return;
 
-	StopActiveAttack(bInterrupted);
+	// Montage is already ended on the AnimInstance, so avoid redundant Montage_Stop call
+	StopActiveAttack(bInterrupted, /*bStopMontage=*/false);
 	OnAttackEnded.Broadcast();
 
 	// Process queued weapon switch if one was deferred during the attack
@@ -443,17 +475,63 @@ void UCombatComponent::HandleMontageEnded(UAnimMontage* Montage, bool bInterrupt
 	}
 }
 
-void UCombatComponent::ResetCombo()
+void UCombatComponent::OnMontageInstanceBlendingOut(UAnimMontage* Montage, bool bInterrupted, uint64 AttackToken)
 {
-	StopActiveAttack(true);
+	if (AttackToken != ActiveAttackToken || AttackToken == 0)
+	{
+		UE_LOG(LogTemp, Verbose, TEXT("[UCombatComponent] Stale blending out callback rejected for token %llu (active token: %llu)"), AttackToken, ActiveAttackToken);
+		return;
+	}
+	HandleMontageBlendingOut(Montage, bInterrupted);
 }
 
-void UCombatComponent::StopActiveAttack(bool bInterrupted)
+void UCombatComponent::OnMontageInstanceEnded(UAnimMontage* Montage, bool bInterrupted, uint64 AttackToken)
 {
-	// Cancel trace on the weapon that started the attack
+	if (AttackToken != ActiveAttackToken || AttackToken == 0)
+	{
+		UE_LOG(LogTemp, Verbose, TEXT("[UCombatComponent] Stale montage ended callback rejected for token %llu (active token: %llu)"), AttackToken, ActiveAttackToken);
+		return;
+	}
+	HandleMontageEnded(Montage, bInterrupted);
+}
+
+void UCombatComponent::ResetCombo()
+{
+	StopActiveAttack(true, true, 0.2f);
+}
+
+void UCombatComponent::StopActiveAttack(bool bInterrupted, bool bStopMontage, float BlendOutTime)
+{
+	if (bIsStoppingAttack)
+	{
+		return;
+	}
+
+	TGuardValue<bool> StoppingGuard(bIsStoppingAttack, true);
+
+	// Invalidate the attack token FIRST so any synchronous callbacks from Montage_Stop are treated as stale
+	const uint64 RetiredToken = ActiveAttackToken;
+	ActiveAttackToken = 0;
+	ActiveMontageInstanceId = INDEX_NONE;
+
+	// Cancel trace on the specific weapon that initiated the attack
 	if (ActiveAttackWeapon.IsValid())
 	{
 		ActiveAttackWeapon->CancelTrace();
+	}
+
+	UAnimMontage* MontageToStop = ActiveAttackMontage;
+
+	// Stop montage playback if requested and still actively playing
+	if (bStopMontage && MontageToStop && OwningCharacter.IsValid() && OwningCharacter->GetMesh())
+	{
+		if (UAnimInstance* AnimInstance = OwningCharacter->GetMesh()->GetAnimInstance())
+		{
+			if (AnimInstance->Montage_IsPlaying(MontageToStop))
+			{
+				AnimInstance->Montage_Stop(BlendOutTime, MontageToStop);
+			}
+		}
 	}
 
 	ActiveAttackWeapon = nullptr;

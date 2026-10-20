@@ -31,7 +31,15 @@ void AWeapon_Unarmed::SampleSocketLocations(TMap<FName, FVector>& OutLocations) 
 	USkeletalMeshComponent* SkelMesh = OwningCharacter->GetMesh();
 	for (const FName& SName : ValidatedTraceSockets)
 	{
-		OutLocations.Add(SName, SkelMesh->GetSocketLocation(SName));
+		const FVector Loc = SkelMesh->GetSocketLocation(SName);
+		if (!Loc.ContainsNaN())
+		{
+			OutLocations.Add(SName, Loc);
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[AWeapon_Unarmed::SampleSocketLocations] Skeletal socket '%s' returned NaN!"), *SName.ToString());
+		}
 	}
 }
 
@@ -40,12 +48,13 @@ void AWeapon_Unarmed::BeginTrace()
 	if (!OwningCharacter.IsValid() || !OwningCharacter->GetMesh())
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[AWeapon_Unarmed::BeginTrace] OwningCharacter or SkeletalMesh is null!"));
+		bIsTracing = false;
 		return;
 	}
 
 	USkeletalMeshComponent* SkelMesh = OwningCharacter->GetMesh();
 
-	// Validate skeletal sockets exist on the character mesh
+	// Validate skeletal sockets exist on the character mesh before enabling trace
 	ValidatedTraceSockets.Empty();
 	for (const FName& SName : SkeletalTraceSockets)
 	{
@@ -72,59 +81,4 @@ void AWeapon_Unarmed::BeginTrace()
 	PreviousSocketLocations.Empty();
 
 	SampleSocketLocations(PreviousSocketLocations);
-}
-
-void AWeapon_Unarmed::TickTrace()
-{
-	if (!bIsTracing || !OwningCharacter.IsValid() || !OwningCharacter->GetMesh() || ValidatedTraceSockets.IsEmpty()) return;
-
-	UWorld* World = GetWorld();
-	if (!World) return;
-
-	TMap<FName, FVector> CurrentLocations;
-	SampleSocketLocations(CurrentLocations);
-
-	const FCollisionShape SphereShape = FCollisionShape::MakeSphere(WeaponConfig.TraceRadius);
-	FCollisionQueryParams QueryParams(TEXT("UnarmedTrace"), false, this);
-	QueryParams.AddIgnoredActor(this);
-	QueryParams.AddIgnoredActor(OwningCharacter.Get());
-
-	TArray<FHitResult> AllHits;
-
-	for (const auto& Pair : CurrentLocations)
-	{
-		const FName& SName = Pair.Key;
-		const FVector& Curr = Pair.Value;
-		const FVector* Prev = PreviousSocketLocations.Find(SName);
-		const FVector Start = Prev ? *Prev : Curr;
-
-		TArray<FHitResult> Hits;
-		World->SweepMultiByChannel(
-			Hits,
-			Start,
-			Curr,
-			FQuat::Identity,
-			WeaponConfig.TraceCollisionChannel,
-			SphereShape,
-			QueryParams
-		);
-		AllHits.Append(Hits);
-
-		if (WeaponConfig.bDrawDebugTraces)
-		{
-			DrawDebugCapsule(World, (Start + Curr) * 0.5f, (Start - Curr).Size() * 0.5f + WeaponConfig.TraceRadius, WeaponConfig.TraceRadius, FRotationMatrix::MakeFromZ(Curr - Start).ToQuat(), FColor::Cyan, false, 0.3f);
-		}
-	}
-
-	for (const FHitResult& Hit : AllHits)
-	{
-		AActor* HitActor = Hit.GetActor();
-		if (CanDamageActor(HitActor) && !DamagedActorsThisSwing.Contains(HitActor))
-		{
-			DamagedActorsThisSwing.Add(HitActor);
-			ProcessHit(Hit);
-		}
-	}
-
-	PreviousSocketLocations = CurrentLocations;
 }
