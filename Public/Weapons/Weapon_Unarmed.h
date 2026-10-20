@@ -19,4 +19,7 @@ public:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Unarmed|Sockets")
 	TArray<FName> SkeletalTraceSockets = { FName("Hand_R_Fist"), FName("Hand_L_Fist"), FName("Foot_R_Socket") };
+
+protected:
+	virtual void SampleSocketLocations(TMap<FName, FVector>& OutLocations) const override;
 };

@@ -20,12 +20,19 @@ float UDamageHandlerComponent::ApplyDamage_Implementation(AActor* InstigatorActo
 {
 	if (bIsDead) return 0.0f;
 
-	// 1. Calculate raw damage
-	const float RawDamage = DamageInfo.BaseDamage * FMath::Max(0.1f, DamageInfo.DamageMultiplier);
+	// 1. Calculate raw damage using canonical formula
+	const float RawDamage = DamageInfo.GetCalculatedRawDamage();
+
+	// If raw damage is 0 or negative (e.g. non-damaging utility or invulnerable hit), return 0.
+	// Do not artificially clamp to 1.0f.
+	if (RawDamage <= 0.0f)
+	{
+		return 0.0f;
+	}
 
 	// 2. Armor mitigation formula: FinalDamage = RawDamage * (100 / (100 + Armor))
 	const float MitigationFactor = 100.0f / (100.0f + FMath::Max(0.0f, Armor));
-	const float FinalDamage = FMath::Max(1.0f, RawDamage * MitigationFactor);
+	const float FinalDamage = FMath::Max(0.0f, RawDamage * MitigationFactor);
 
 	// 3. Poise reduction
 	CurrentPoise = FMath::Clamp(CurrentPoise - DamageInfo.PoiseDamage, 0.0f, MaxPoise);

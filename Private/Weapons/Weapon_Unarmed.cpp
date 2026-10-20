@@ -22,37 +22,69 @@ AWeapon_Unarmed::AWeapon_Unarmed()
 	}
 }
 
+void AWeapon_Unarmed::SampleSocketLocations(TMap<FName, FVector>& OutLocations) const
+{
+	OutLocations.Empty(ValidatedTraceSockets.Num());
+
+	if (!OwningCharacter.IsValid() || !OwningCharacter->GetMesh()) return;
+
+	USkeletalMeshComponent* SkelMesh = OwningCharacter->GetMesh();
+	for (const FName& SName : ValidatedTraceSockets)
+	{
+		OutLocations.Add(SName, SkelMesh->GetSocketLocation(SName));
+	}
+}
+
 void AWeapon_Unarmed::BeginTrace()
 {
+	if (!OwningCharacter.IsValid() || !OwningCharacter->GetMesh())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AWeapon_Unarmed::BeginTrace] OwningCharacter or SkeletalMesh is null!"));
+		return;
+	}
+
+	USkeletalMeshComponent* SkelMesh = OwningCharacter->GetMesh();
+
+	// Validate skeletal sockets exist on the character mesh
+	ValidatedTraceSockets.Empty();
+	for (const FName& SName : SkeletalTraceSockets)
+	{
+		if (SkelMesh->DoesSocketExist(SName))
+		{
+			ValidatedTraceSockets.Add(SName);
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[AWeapon_Unarmed::BeginTrace] Skeletal socket '%s' not found on character mesh '%s'!"),
+				*SName.ToString(), *GetNameSafe(SkelMesh->GetSkeletalMeshAsset()));
+		}
+	}
+
+	if (ValidatedTraceSockets.IsEmpty())
+	{
+		UE_LOG(LogTemp, Error, TEXT("[AWeapon_Unarmed::BeginTrace] No valid skeletal sockets found on character! Aborting unarmed trace."));
+		bIsTracing = false;
+		return;
+	}
+
 	bIsTracing = true;
 	DamagedActorsThisSwing.Empty();
 	PreviousSocketLocations.Empty();
 
-	if (OwningCharacter.IsValid() && OwningCharacter->GetMesh())
-	{
-		USkeletalMeshComponent* SkelMesh = OwningCharacter->GetMesh();
-		for (const FName& SName : SkeletalTraceSockets)
-		{
-			PreviousSocketLocations.Add(SName, SkelMesh->GetSocketLocation(SName));
-		}
-	}
+	SampleSocketLocations(PreviousSocketLocations);
 }
 
 void AWeapon_Unarmed::TickTrace()
 {
-	if (!bIsTracing || !OwningCharacter.IsValid() || !OwningCharacter->GetMesh()) return;
+	if (!bIsTracing || !OwningCharacter.IsValid() || !OwningCharacter->GetMesh() || ValidatedTraceSockets.IsEmpty()) return;
 
 	UWorld* World = GetWorld();
 	if (!World) return;
 
-	USkeletalMeshComponent* SkelMesh = OwningCharacter->GetMesh();
 	TMap<FName, FVector> CurrentLocations;
-	for (const FName& SName : SkeletalTraceSockets)
-	{
-		CurrentLocations.Add(SName, SkelMesh->GetSocketLocation(SName));
-	}
+	SampleSocketLocations(CurrentLocations);
 
-	FCollisionShape SphereShape = FCollisionShape::MakeSphere(WeaponConfig.TraceRadius);
+	const FCollisionShape SphereShape = FCollisionShape::MakeSphere(WeaponConfig.TraceRadius);
 	FCollisionQueryParams QueryParams(TEXT("UnarmedTrace"), false, this);
 	QueryParams.AddIgnoredActor(this);
 	QueryParams.AddIgnoredActor(OwningCharacter.Get());

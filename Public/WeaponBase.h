@@ -12,7 +12,7 @@ class ACharacter;
 
 /**
  * Base weapon actor responsible for physical/skeletal attachment,
- * multi-point continuous swept melee hit detection, and damage routing.
+ * multi-point continuous swept rotational hit detection, and damage routing.
  */
 UCLASS(Blueprintable, ClassGroup=(Combat))
 class COMBATSYSTEM_API AWeaponBase : public AActor
@@ -72,6 +72,13 @@ public:
 	// Target Validation Filter
 	virtual bool CanDamageActor(const AActor* TargetActor) const;
 
+	// Active Section Multiplier
+	UFUNCTION(BlueprintCallable, Category = "Weapon|Damage")
+	void SetCurrentDamageMultiplier(float InMultiplier) { CurrentDamageMultiplier = InMultiplier; }
+
+	UFUNCTION(BlueprintPure, Category = "Weapon|Damage")
+	float GetCurrentDamageMultiplier() const { return CurrentDamageMultiplier; }
+
 	// Getters
 	FORCEINLINE bool IsTracing() const { return bIsTracing; }
 	FORCEINLINE EWeaponType GetWeaponType() const { return WeaponConfig.WeaponType; }
@@ -85,6 +92,9 @@ protected:
 	/** Internal trace state */
 	bool bIsTracing = false;
 
+	/** Validated socket names confirmed on the active mesh */
+	TArray<FName> ValidatedTraceSockets;
+
 	/** Previous tick socket locations for continuous multi-point swept capsule volumes */
 	TMap<FName, FVector> PreviousSocketLocations;
 
@@ -92,9 +102,12 @@ protected:
 	UPROPERTY(Transient)
 	TSet<TWeakObjectPtr<AActor>> DamagedActorsThisSwing;
 
+	/** Active section damage multiplier set by CombatComponent */
+	float CurrentDamageMultiplier = 1.0f;
+
 	/** Processes a validated hit and dispatches damage to the target */
 	virtual void ProcessHit(const FHitResult& HitResult);
 
 	/** Helper to sample current socket locations */
-	void SampleSocketLocations(TMap<FName, FVector>& OutLocations) const;
+	virtual void SampleSocketLocations(TMap<FName, FVector>& OutLocations) const;
 };

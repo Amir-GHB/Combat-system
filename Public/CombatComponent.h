@@ -17,12 +17,13 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnCombatStateChangedSignature, ECom
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnAttackEndedSignature);
 
 /**
- * Universal Combat Component:
- * - Manages simultaneously owned weapons and deterministic weapon switching.
- * - Robust state machine: Distinct ActiveSection vs RequestedNextSection tracking.
- * - Time-stamped input buffer with automatic expiration.
- * - Protection against repeated input skipping combo sections.
- * - Dynamic montage section discovery (zero hardcoded section names).
+ * Universal Combat Component (UE 5.8 Compatible):
+ * - Manages simultaneously owned weapons and safe, deterministic weapon switching.
+ * - Robust state machine: Strictly decoupled ActiveSectionIndex vs PendingSectionIndex.
+ * - Time-stamped input buffer with automatic expiration and single-transition-per-window policy.
+ * - Attack generation tokens to guard against stale montage callbacks.
+ * - Dedicated ActiveAttackWeapon tracking ensuring cleanup never targets the wrong weapon.
+ * - Dynamic montage section discovery (zero hardcoded section names or counts).
  */
 UCLASS(ClassGroup=(Combat), meta=(BlueprintSpawnableComponent))
 class COMBATSYSTEM_API UCombatComponent : public UActorComponent
@@ -91,9 +92,9 @@ public:
 	void NotifyMeleeTraceTick(const UAnimSequenceBase* Animation, float FrameDeltaTime);
 	void NotifyMeleeTraceEnd(const UAnimSequenceBase* Animation);
 
-	/** Notifies that a new section actually began playing */
+	/** Called by UAnimNotify_SectionEntry when a section actually begins playing */
 	UFUNCTION(BlueprintCallable, Category = "Combat|Combo")
-	void NotifySectionEntered(int32 SectionIndex, FName SectionName);
+	void NotifySectionEntered(FName SectionName, const UAnimSequenceBase* Animation);
 
 	UFUNCTION(BlueprintCallable, Category = "Combat|Attack")
 	void ResetCombo();
@@ -104,9 +105,11 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat|State")
 	ECombatState CurrentCombatState = ECombatState::Idle;
 
+	/** The section index actively playing on screen */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat|State")
 	int32 ActiveSectionIndex = INDEX_NONE;
 
+	/** The next section index requested and linked, but not yet playing */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat|State")
 	int32 PendingSectionIndex = INDEX_NONE;
 
@@ -116,6 +119,7 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat|State")
 	bool bComboWindowOpen = false;
 
+	/** Guard: exactly one transition accepted per combo window */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat|State")
 	bool bTransitionCommittedForWindow = false;
 
@@ -138,8 +142,16 @@ protected:
 	UPROPERTY(Transient)
 	TWeakObjectPtr<ACharacter> OwningCharacter;
 
+	/** Active attack montage asset */
 	UPROPERTY(Transient)
 	TObjectPtr<UAnimMontage> ActiveAttackMontage = nullptr;
+
+	/** Explicit tracking of the weapon that initiated the attack */
+	UPROPERTY(Transient)
+	TWeakObjectPtr<AWeaponBase> ActiveAttackWeapon = nullptr;
+
+	/** Attack generation token: increments on every new attack to reject stale montage callbacks */
+	uint64 CurrentAttackToken = 0;
 
 	/** Timestamp of the last valid attack input */
 	double LastAttackInputTimestamp = -1.0;
@@ -159,8 +171,9 @@ protected:
 
 	bool StartNewCombo();
 	bool TryQueueSectionTransition();
-	void CommitTransitionToNextSection();
+	void CommitSectionTransition(int32 NewSectionIndex, FName NewSectionName);
 	void SetCombatState(ECombatState NewState);
 	void ClearInputBuffer();
 	bool IsInputBufferValid() const;
+	void StopActiveAttack(bool bInterrupted);
 };

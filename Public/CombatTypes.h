@@ -10,7 +10,7 @@ class AWeaponBase;
 class UAnimMontage;
 
 /**
- * Supported weapon classifications. Easily extensible via project-specific configurations.
+ * Supported weapon classifications. Extensible for project-specific weapons.
  */
 UENUM(BlueprintType)
 enum class EWeaponType : uint8
@@ -83,6 +83,15 @@ struct FDamageInfo
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Combat|Damage")
 	TWeakObjectPtr<AWeaponBase> InstigatorWeapon = nullptr;
+
+	/**
+	 * Canonical calculated raw damage before armor or resistance mitigation.
+	 * Multiplier is clamped to a minimum of 0.0 to prevent negative damage.
+	 */
+	FORCEINLINE float GetCalculatedRawDamage() const
+	{
+		return BaseDamage * FMath::Max(0.0f, DamageMultiplier);
+	}
 };
 
 /**
