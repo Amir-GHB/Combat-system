@@ -72,6 +72,7 @@ UCombatComponent* UCombatAnimInstance::GetCombatComponent() const
 
 void UCombatAnimInstance::RefreshCachedReferences()
 {
+	LastAnimationStateRevision = INDEX_NONE;
 	ACharacter* Character = Cast<ACharacter>(TryGetPawnOwner());
 	CachedCharacter = Character;
 	CachedCombatComponent = IsValid(Character) ? Character->FindComponentByClass<UCombatComponent>() : nullptr;
