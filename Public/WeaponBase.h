@@ -42,6 +42,14 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Config")
 	FWeaponConfig WeaponConfig;
 
+	/** If enabled, the weapon is detached and hidden instead of being attached to a holster socket. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Equip")
+	bool bNoHolster = false;
+
+	/** When switching away from this weapon, play its unequip montage before equipping the next weapon. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Equip")
+	bool bPlayUnequipMontageOnSwitch = true;
+
 	// -----------------------------------------------------------
 	// Attachment Controls
 	// -----------------------------------------------------------
