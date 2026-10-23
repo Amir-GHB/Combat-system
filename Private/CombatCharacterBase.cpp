@@ -83,6 +83,8 @@ void ACombatCharacterBase::SetupPlayerInputComponent(UInputComponent* PlayerInpu
 		if (AttackAction)
 		{
 			EnhancedInput->BindAction(AttackAction, ETriggerEvent::Started, this, &ACombatCharacterBase::OnAttackTriggered);
+			EnhancedInput->BindAction(AttackAction, ETriggerEvent::Completed, this, &ACombatCharacterBase::OnAttackReleased);
+			EnhancedInput->BindAction(AttackAction, ETriggerEvent::Canceled, this, &ACombatCharacterBase::OnAttackCanceled);
 		}
 		if (NextWeaponAction)
 		{
@@ -123,6 +125,23 @@ void ACombatCharacterBase::OnAttackTriggered(const FInputActionValue& Value)
 	if (CombatComponent)
 	{
 		CombatComponent->HandleAttackInput();
+	}
+}
+
+
+void ACombatCharacterBase::OnAttackReleased(const FInputActionValue& Value)
+{
+	if (CombatComponent)
+	{
+		CombatComponent->HandleAttackReleased();
+	}
+}
+
+void ACombatCharacterBase::OnAttackCanceled(const FInputActionValue& Value)
+{
+	if (CombatComponent)
+	{
+		CombatComponent->CancelAttackInput();
 	}
 }
 

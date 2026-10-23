@@ -24,7 +24,7 @@ In the character's Combat Component defaults:
 2. Set **Weapon Cycle Order** to the order desired for next-weapon input.
 3. Set **Default Weapon Type** to the starting weapon.
 4. Configure each weapon Blueprint's WeaponConfig, including hand/holster sockets, damage values, and trace sockets.
-5. Add **Weapon_Spear** under **Spear** for a melee spear starting point. **Weapon_Bow** is included as a ranged placeholder only; projectile firing, ammo, and bow-specific animations are not implemented yet. Add either class to **Weapon Classes** to make it available, then adjust **Weapon Cycle Order** as desired.
+5. Add **Weapon_Spear** under **Spear** for a melee spear starting point. **Weapon_Bow** is a rigged-bow ranged weapon with hold-to-draw input, projectile firing, and configurable distance falloff. Add either class to **Weapon Classes** to make it available, then adjust **Weapon Cycle Order** as desired.
 
 The component spawns the configured weapons, initially attaches them to their holsters, then equips the default weapon. Missing equip/unequip montages fall back to immediate socket attachment.
 
@@ -69,6 +69,23 @@ Switch requests made during attacks are queued when **Queue Weapon Switch During
 
 The trace state is controlled by AnimNotifyState_MeleeTrace. Ensure the selected collision channel overlaps the target actors' collision responses.
 
-## 6. Montage callback lifecycle fix
+## 6. Rigged bow and projectile setup
+
+1. Add **Weapon_Bow** to the Combat Component's **Weapon Classes** map under **Bow**.
+2. Assign the bow's rigged skeletal mesh to **Skeletal Bow Mesh**. Its skeletal mesh can use its own AnimBP/Control Rig for string stretch and limb bending.
+3. Add an **Arrow_Spawn_Socket** to the bow skeleton at the arrow's release point, or set **Arrow Spawn Socket Name** to match your socket. If no socket is found, the system safely falls back to a character-view-based spawn position.
+4. Optionally assign **Draw Montage** and **Release Montage**. Both are optional; missing montages do not disable drawing or projectile firing.
+5. The attack input's **Started** event begins drawing, **Completed** releases a shot, and **Canceled** cancels without firing. A weapon switch during a draw also cancels the draw.
+6. Use **Full Draw Time** to define charge duration. **Allow Quick Shot** permits a tap to fire at low charge; otherwise, releasing before **Minimum Draw Time** cancels the shot.
+7. In the bow skeletal mesh's AnimBP/Control Rig, read the owning **Weapon_Bow** actor's **DrawAlpha** (0..1) to drive the rigged string and bow limbs. **bIsDrawing** indicates whether the player is currently holding the draw.
+8. Configure **Projectile Class** and **Projectile Config**. Assign an arrow mesh to the projectile Blueprint's optional **Projectile Visual** component. Projectile settings include speed, gravity, radius, lifetime, damage, and falloff mode:
+   - **No Falloff** keeps damage constant over distance.
+   - **Linear Falloff** interpolates from full damage at **Falloff Start Distance** to **Minimum Damage Multiplier** at **Falloff End Distance**.
+   - **Curve Falloff** samples **Falloff Curve** using normalized distance from 0 at falloff start to 1 at falloff end.
+9. Charge strength scales projectile damage and speed using **Min/Max Draw Damage Multiplier** and **Min/Max Draw Speed Multiplier**. Bow damage values come from its **WeaponConfig**; projectile movement and falloff come from **Projectile Config**.
+
+The projectile routes hits through **DamageHandlerComponent** when available and falls back to Unreal's TakeDamage path otherwise. The projectile is destroyed on impact or when its configured lifetime expires. No ammo/inventory system is included in this first pass.
+
+## 7. Montage callback lifecycle fix
 
 The component intentionally does **not** bind global UAnimInstance::OnMontageEnded or OnMontageBlendingOut listeners. It uses delegates bound to each montage playback and validates callbacks with an attack generation token. It does not use FAnimMontageInstance::GetInstanceId() or an ActiveMontageInstanceId field, which avoids the UE 5.8 compile issue and prevents stale global callbacks from resetting a newer attack.

@@ -8,6 +8,7 @@
 
 class AWeaponBase;
 class UAnimMontage;
+class UCurveFloat;
 
 /**
  * Supported weapon classifications. Extensible for project-specific weapons.
@@ -19,7 +20,7 @@ enum class EWeaponType : uint8
 	Sword          UMETA(DisplayName = "One-Handed / Longsword"),
 	BullHeadHammer UMETA(DisplayName = "Bull Head Hammer"),
 	Spear          UMETA(DisplayName = "Spear"),
-	Bow            UMETA(DisplayName = "Bow (Ranged Placeholder)"),
+	Bow            UMETA(DisplayName = "Bow (Ranged)"),
 	CustomWeapon   UMETA(DisplayName = "Custom Extensible Weapon")
 };
 
@@ -35,7 +36,8 @@ enum class ECombatState : uint8
 	Recovering     UMETA(DisplayName = "Recovering / Blend Out"),
 	SwappingWeapon UMETA(DisplayName = "Swapping Weapon"),
 	Staggered      UMETA(DisplayName = "Staggered / Hit Stun"),
-	Dead           UMETA(DisplayName = "Dead")
+	Dead           UMETA(DisplayName = "Dead"),
+	DrawingBow     UMETA(DisplayName = "Drawing Bow")
 };
 
 /** Selects whether a weapon uses one sectioned montage or a montage per combo step. */
@@ -129,6 +131,72 @@ struct FDamageInfo
 		PoiseDamage = (!FMath::IsFinite(PoiseDamage) || PoiseDamage < 0.0f) ? 0.0f : PoiseDamage;
 		KnockbackImpulse = (!FMath::IsFinite(KnockbackImpulse) || KnockbackImpulse < 0.0f) ? 0.0f : KnockbackImpulse;
 	}
+};
+
+/** Damage falloff is evaluated using total projectile travel distance. */
+UENUM(BlueprintType)
+enum class EProjectileFalloffMode : uint8
+{
+	None   UMETA(DisplayName = "No Falloff"),
+	Linear UMETA(DisplayName = "Linear Falloff"),
+	Curve  UMETA(DisplayName = "Curve Falloff")
+};
+
+/** Runtime and damage settings copied onto each spawned projectile. */
+USTRUCT(BlueprintType)
+struct FProjectileConfig
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Projectile|Movement", meta = (ClampMin = "0.0"))
+	float InitialSpeed = 3200.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Projectile|Movement", meta = (ClampMin = "0.0"))
+	float MaxSpeed = 4200.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Projectile|Movement")
+	float GravityScale = 0.15f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Projectile|Movement", meta = (ClampMin = "0.05"))
+	float LifeSeconds = 8.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Projectile|Collision", meta = (ClampMin = "1.0"))
+	float CollisionRadius = 5.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Projectile|Damage", meta = (ClampMin = "0.0"))
+	float BaseDamage = 30.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Projectile|Damage", meta = (ClampMin = "0.0"))
+	float DamageMultiplier = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Projectile|Damage", meta = (ClampMin = "0.0"))
+	float PoiseDamage = 10.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Projectile|Damage", meta = (ClampMin = "0.0"))
+	float KnockbackImpulse = 250.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Projectile|Damage")
+	EDamageCategory DamageCategory = EDamageCategory::Piercing;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Projectile|Damage")
+	EWeaponType WeaponType = EWeaponType::Bow;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Projectile|Falloff")
+	EProjectileFalloffMode FalloffMode = EProjectileFalloffMode::Linear;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Projectile|Falloff", meta = (ClampMin = "0.0"))
+	float FalloffStartDistance = 800.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Projectile|Falloff", meta = (ClampMin = "0.0"))
+	float FalloffEndDistance = 5000.0f;
+
+	/** Damage multiplier at and beyond FalloffEndDistance. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Projectile|Falloff", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float MinimumDamageMultiplier = 0.25f;
+
+	/** Optional curve sampled with normalized distance from falloff start (0) to end (1). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Projectile|Falloff", meta = (EditCondition = "FalloffMode == EProjectileFalloffMode::Curve"))
+	TObjectPtr<UCurveFloat> FalloffCurve = nullptr;
 };
 
 /**
