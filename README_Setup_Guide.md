@@ -24,6 +24,7 @@ In the character's Combat Component defaults:
 2. Set **Weapon Cycle Order** to the order desired for next-weapon input.
 3. Set **Default Weapon Type** to the starting weapon.
 4. Configure each weapon Blueprint's WeaponConfig, including hand/holster sockets, damage values, and trace sockets.
+5. Add **Weapon_Spear** under **Spear** for a melee spear starting point. **Weapon_Bow** is included as a ranged placeholder only; projectile firing, ammo, and bow-specific animations are not implemented yet. Add either class to **Weapon Classes** to make it available, then adjust **Weapon Cycle Order** as desired.
 
 The component spawns the configured weapons, initially attaches them to their holsters, then equips the default weapon. Missing equip/unequip montages fall back to immediate socket attachment.
 
@@ -43,14 +44,15 @@ Each weapon uses exactly one of these modes. Keep the unused configuration empty
 
 1. Set **Attack Montage Mode** to **One Montage Per Combo Step**.
 2. Populate **Individual Attack Montages** in combo order. The array index is the combo step, so no section names or hardcoded combo count are required.
-3. Place AnimNotifyState_ComboWindow in each montage where the next attack may be buffered.
-4. Place AnimNotifyState_MeleeTrace across the active damage frames of each montage.
+3. Place AnimNotifyState_ComboWindow over the frames where the next attack input is accepted.
+4. Place the single AnimNotify **Combo Transition Point** at the exact frame where the next montage should take over. Put it after the combo window and before any idle/recovery tail that should be skipped when chaining.
+5. Place AnimNotifyState_MeleeTrace across the active damage frames of each montage.
 
-For both modes, the combo window accepts one transition per window. Early attack input is buffered for Input Buffer Duration seconds. Individual-montage mode starts the next montage after the current one ends naturally; interrupted attacks do not continue the combo.
+For both modes, the combo window accepts one transition per window. Early attack input is buffered for Input Buffer Duration seconds. In individual-montage mode, a valid input queues the next array entry, and **Combo Transition Point** starts it at the authored frame, blending/interruption of the outgoing montage instead of waiting through its idle tail. If the transition notify is absent, the queued step falls back to starting when the current montage ends naturally. Interrupted attacks do not automatically continue the combo.
 
 ## 4. Animation-driven weapon switching
 
-Each weapon can have a unique **Unequip Montage** and **Equip Montage** in its WeaponConfig.
+Each weapon can have a unique **Unequip Montage** and **Equip Montage** in its WeaponConfig. In the weapon Blueprint defaults, **bPlayUnequipMontageOnSwitch** controls whether that weapon's outgoing unequip animation plays; disabling it skips directly to the holster step and still plays the incoming weapon's equip montage. **bNoHolster** detaches and hides the weapon while it is unequipped, instead of attaching it to a holster socket.
 
 - The outgoing weapon's **Unequip Montage** should include AnimNotify_WeaponSwapPoint set to **Holster Current Weapon** at the frame the weapon should move to its holster socket.
 - The incoming weapon's **Equip Montage** should include AnimNotify_WeaponSwapPoint set to **Draw Target Weapon** at the frame it should move to its hand socket.
