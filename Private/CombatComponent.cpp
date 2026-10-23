@@ -685,12 +685,12 @@ void UCombatComponent::SetNonCombatAnimation(bool bEnableNonCombatAnimation)
 
 void UCombatComponent::RefreshAnimationState()
 {
-	const EWeaponType EffectiveWeaponType = (bWeaponSwapActive && bHolsterPointReached && !bPlayingUnequipMontage) ? PendingWeaponType : CurrentWeaponType;
+	const EWeaponType EffectiveWeaponType = (bWeaponSwapActive && ((bHolsterPointReached && !bPlayingUnequipMontage) || !IsValid(CurrentWeapon))) ? PendingWeaponType : CurrentWeaponType;
 	AnimationState.WeaponType = EffectiveWeaponType;
 	AnimationState.CombatState = CurrentCombatState;
 	AnimationState.bWeaponTransitionActive = bWeaponSwapActive;
 
-	if (bForceNonCombatAnimation)
+	if (bForceNonCombatAnimation || (!IsValid(CurrentWeapon) && !bWeaponSwapActive))
 	{
 		AnimationState.Style = ECombatAnimationStyle::NonCombat;
 	}
