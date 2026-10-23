@@ -66,6 +66,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Combat|Attack")
 	void HandleAttackInput();
 
+	/** Completes a held ranged attack and releases its projectile. */
+	UFUNCTION(BlueprintCallable, Category = "Combat|Ranged")
+	void HandleAttackReleased();
+
+	/** Cancels a held ranged attack without firing, for canceled input or interruption. */
+	UFUNCTION(BlueprintCallable, Category = "Combat|Ranged")
+	void CancelAttackInput();
+
 	void NotifyComboWindowBegin(const UAnimSequenceBase* Animation);
 	void NotifyComboWindowEnd(const UAnimSequenceBase* Animation);
 	/** Starts a queued individual-montage combo step at an authored transition frame. */
