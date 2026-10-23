@@ -61,6 +61,8 @@ protected:
 	void OnJumpStarted(const FInputActionValue& Value);
 	void OnJumpEnded(const FInputActionValue& Value);
 	void OnAttackTriggered(const FInputActionValue& Value);
+	void OnAttackReleased(const FInputActionValue& Value);
+	void OnAttackCanceled(const FInputActionValue& Value);
 	void OnNextWeaponTriggered(const FInputActionValue& Value);
 
 public:
