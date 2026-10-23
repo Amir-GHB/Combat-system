@@ -15,14 +15,9 @@ UCombatComponent::UCombatComponent()
 void UCombatComponent::BeginPlay()
 {
 	Super::BeginPlay();
-
 	OwningCharacter = Cast<ACharacter>(GetOwner());
-	if (!OwningCharacter.IsValid()) return;
+	if (!OwningCharacter.IsValid() || !GetWorld()) return;
 
-	UWorld* World = GetWorld();
-	if (!World) return;
-
-	// Spawn weapons deterministically
 	FActorSpawnParameters SpawnParams;
 	SpawnParams.Owner = OwningCharacter.Get();
 	SpawnParams.Instigator = OwningCharacter.Get();
@@ -30,49 +25,36 @@ void UCombatComponent::BeginPlay()
 
 	for (const auto& Pair : WeaponClasses)
 	{
-		const EWeaponType WType = Pair.Key;
-		const TSubclassOf<AWeaponBase>& WClass = Pair.Value;
-
-		if (WClass)
+		if (!Pair.Value) continue;
+		AWeaponBase* Spawned = GetWorld()->SpawnActor<AWeaponBase>(Pair.Value, SpawnParams);
+		if (Spawned)
 		{
-			AWeaponBase* Spawned = World->SpawnActor<AWeaponBase>(WClass, SpawnParams);
-			if (Spawned)
-			{
-				SpawnedWeapons.Add(WType, Spawned);
-				Spawned->AttachToHolster(OwningCharacter.Get());
-			}
-			else
-			{
-				UE_LOG(LogTemp, Error, TEXT("[UCombatComponent::BeginPlay] Failed to spawn weapon of type %d"), (int32)WType);
-			}
+			SpawnedWeapons.Add(Pair.Key, Spawned);
+			Spawned->AttachToHolster(OwningCharacter.Get());
+		}
+		else
+		{
+			UE_LOG(LogTemp, Error, TEXT("[CombatComponent] Failed to spawn weapon type %d"), static_cast<int32>(Pair.Key));
 		}
 	}
 
-	// Equip starting weapon
+	// Intentionally no global AnimInstance montage delegates. All callbacks are bound to
+	// the montage playback initiated here and validated with a generation token.
 	EquipWeapon(DefaultWeaponType);
-
-	// Bind global montage lifecycle delegates on AnimInstance as secondary listener
-	if (OwningCharacter->GetMesh() && OwningCharacter->GetMesh()->GetAnimInstance())
-	{
-		UAnimInstance* AnimInstance = OwningCharacter->GetMesh()->GetAnimInstance();
-		AnimInstance->OnMontageEnded.AddDynamic(this, &UCombatComponent::HandleMontageEnded);
-		AnimInstance->OnMontageBlendingOut.AddDynamic(this, &UCombatComponent::HandleMontageBlendingOut);
-	}
 }
 
 void UCombatComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
-	// Remove delegate bindings cleanly to prevent stale callbacks
-	if (OwningCharacter.IsValid() && OwningCharacter->GetMesh())
+	StopActiveAttack(true, true, 0.0f);
+	if (bWeaponSwapActive && OwningCharacter.IsValid() && OwningCharacter->GetMesh())
 	{
-		if (UAnimInstance* AnimInstance = OwningCharacter->GetMesh()->GetAnimInstance())
+		if (UAnimInstance* Anim = OwningCharacter->GetMesh()->GetAnimInstance())
 		{
-			AnimInstance->OnMontageEnded.RemoveDynamic(this, &UCombatComponent::HandleMontageEnded);
-			AnimInstance->OnMontageBlendingOut.RemoveDynamic(this, &UCombatComponent::HandleMontageBlendingOut);
+			Anim->Montage_Stop(0.0f);
 		}
 	}
-
-	StopActiveAttack(true, true, 0.0f);
+	++WeaponSwapToken;
+	bWeaponSwapActive = false;
 	Super::EndPlay(EndPlayReason);
 }
 
@@ -80,107 +62,230 @@ void UCombatComponent::EquipWeapon(EWeaponType NewWeaponType)
 {
 	if (!OwningCharacter.IsValid()) return;
 
-	// 1. If currently attacking, handle via queued switch policy
-	if (CurrentCombatState == ECombatState::Attacking || CurrentCombatState == ECombatState::ComboWindow)
+	if (CurrentCombatState == ECombatState::Attacking || CurrentCombatState == ECombatState::ComboWindow ||
+		CurrentCombatState == ECombatState::Recovering)
 	{
-		if (bQueueWeaponSwitchDuringAttack)
+		if (!bQueueWeaponSwitchDuringAttack)
 		{
-			// Verify target weapon exists before queuing
-			if (TObjectPtr<AWeaponBase>* TargetPtr = SpawnedWeapons.Find(NewWeaponType))
-			{
-				if (IsValid(*TargetPtr))
-				{
-					QueuedWeaponSwitch = NewWeaponType;
-					UE_LOG(LogTemp, Log, TEXT("[UCombatComponent] Weapon switch to %d queued until attack finishes."), (int32)NewWeaponType);
-					return;
-				}
-			}
-			UE_LOG(LogTemp, Warning, TEXT("[UCombatComponent] Cannot queue switch: Target weapon %d is invalid!"), (int32)NewWeaponType);
+			UE_LOG(LogTemp, Verbose, TEXT("[CombatComponent] Switch ignored while attack is active."));
 			return;
 		}
-		else
+		if (IsValid(GetWeapon(NewWeaponType)))
 		{
-			UE_LOG(LogTemp, Warning, TEXT("[UCombatComponent] Weapon switch rejected: Attack active and queuing disabled."));
-			return;
+			QueuedWeaponSwitch = NewWeaponType;
 		}
-	}
-
-	// 2. No-op if already equipped
-	if (NewWeaponType == CurrentWeaponType && CurrentWeapon != nullptr)
-	{
 		return;
 	}
 
-	// 3. VALIDATION BEFORE HOLSTERING: Ensure requested weapon exists and is valid
-	TObjectPtr<AWeaponBase>* FoundWeapon = SpawnedWeapons.Find(NewWeaponType);
-	if (!FoundWeapon || !IsValid(*FoundWeapon))
+	if (bWeaponSwapActive)
 	{
-		UE_LOG(LogTemp, Error, TEXT("[UCombatComponent::EquipWeapon] Requested weapon %d is not found or invalid! Current weapon '%s' preserved."),
-			(int32)NewWeaponType, CurrentWeapon ? *CurrentWeapon->GetName() : TEXT("None"));
+		// Latest request wins, but do not interrupt the current animation transaction mid-socket swap.
+		QueuedWeaponSwitch = NewWeaponType;
 		return;
 	}
 
-	// 4. Safely holster current weapon
-	if (CurrentWeapon)
+	if (NewWeaponType == CurrentWeaponType && IsValid(CurrentWeapon)) return;
+	if (!IsValid(GetWeapon(NewWeaponType)))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[CombatComponent] Requested weapon type %d is not spawned."), static_cast<int32>(NewWeaponType));
+		return;
+	}
+
+	BeginWeaponSwap(NewWeaponType);
+}
+
+void UCombatComponent::BeginWeaponSwap(EWeaponType NewWeaponType)
+{
+	AWeaponBase* Target = GetWeapon(NewWeaponType);
+	if (!IsValid(Target) || !OwningCharacter.IsValid()) return;
+
+	PendingWeaponType = NewWeaponType;
+	WeaponBeingUnequipped = CurrentWeapon;
+	WeaponBeingEquipped = Target;
+	bWeaponSwapActive = true;
+	bHolsterPointReached = false;
+	bDrawPointReached = false;
+	bPlayingUnequipMontage = false;
+	++WeaponSwapToken;
+	SetCombatState(ECombatState::SwappingWeapon);
+
+	if (IsValid(CurrentWeapon))
 	{
 		CurrentWeapon->CancelTrace();
-		CurrentWeapon->AttachToHolster(OwningCharacter.Get());
+	}
+	PlayUnequipMontageOrContinue();
+}
+
+void UCombatComponent::PlayUnequipMontageOrContinue()
+{
+	AWeaponBase* OldWeapon = WeaponBeingUnequipped.Get();
+	UAnimMontage* Montage = IsValid(OldWeapon) ? OldWeapon->GetConfig().UnequipMontage : nullptr;
+	UAnimInstance* Anim = OwningCharacter.IsValid() && OwningCharacter->GetMesh() ? OwningCharacter->GetMesh()->GetAnimInstance() : nullptr;
+
+	// Per-weapon fast-switch option: skip only the outgoing weapon's unequip montage.
+	if (!IsValid(OldWeapon) || !OldWeapon->bPlayUnequipMontageOnSwitch || !Montage || !Anim)
+	{
+		if (IsValid(OldWeapon) && OwningCharacter.IsValid())
+		{
+			OldWeapon->AttachToHolster(OwningCharacter.Get());
+		}
+		bHolsterPointReached = true;
+		PlayEquipMontageOrFinish();
+		return;
 	}
 
-	// 5. Equip new validated weapon
-	CurrentWeapon = *FoundWeapon;
-	CurrentWeaponType = NewWeaponType;
-	CurrentWeapon->AttachToHand(OwningCharacter.Get());
+	bPlayingUnequipMontage = true;
+	const uint64 Token = WeaponSwapToken;
+	const float Duration = Anim->Montage_Play(Montage);
+	if (Duration <= 0.0f)
+	{
+		OldWeapon->AttachToHolster(OwningCharacter.Get());
+		bHolsterPointReached = true;
+		PlayEquipMontageOrFinish();
+		return;
+	}
 
+	FOnMontageEnded EndDelegate;
+	EndDelegate.BindUObject(this, &UCombatComponent::OnWeaponSwapMontageEnded, Token, true);
+	Anim->Montage_SetEndDelegate(EndDelegate, Montage);
+}
+
+void UCombatComponent::PlayEquipMontageOrFinish()
+{
+	AWeaponBase* Target = WeaponBeingEquipped.Get();
+	UAnimMontage* Montage = IsValid(Target) ? Target->GetConfig().EquipMontage : nullptr;
+	UAnimInstance* Anim = OwningCharacter.IsValid() && OwningCharacter->GetMesh() ? OwningCharacter->GetMesh()->GetAnimInstance() : nullptr;
+
+	if (!IsValid(Target) || !Montage || !Anim)
+	{
+		if (IsValid(Target) && OwningCharacter.IsValid())
+		{
+			Target->AttachToHand(OwningCharacter.Get());
+		}
+		bDrawPointReached = true;
+		FinishWeaponSwap();
+		return;
+	}
+
+	bPlayingUnequipMontage = false;
+	const uint64 Token = WeaponSwapToken;
+	const float Duration = Anim->Montage_Play(Montage);
+	if (Duration <= 0.0f)
+	{
+		Target->AttachToHand(OwningCharacter.Get());
+		bDrawPointReached = true;
+		FinishWeaponSwap();
+		return;
+	}
+
+	FOnMontageEnded EndDelegate;
+	EndDelegate.BindUObject(this, &UCombatComponent::OnWeaponSwapMontageEnded, Token, false);
+	Anim->Montage_SetEndDelegate(EndDelegate, Montage);
+}
+
+void UCombatComponent::NotifyWeaponSwapPoint(EWeaponSwapNotifyAction Action, const UAnimSequenceBase* Animation)
+{
+	if (!bWeaponSwapActive || !Animation || !OwningCharacter.IsValid()) return;
+	AWeaponBase* OldWeapon = WeaponBeingUnequipped.Get();
+	AWeaponBase* Target = WeaponBeingEquipped.Get();
+
+	if (Action == EWeaponSwapNotifyAction::HolsterCurrent && bPlayingUnequipMontage &&
+		IsValid(OldWeapon) && OldWeapon->GetConfig().UnequipMontage.Get() == Animation)
+	{
+		OldWeapon->AttachToHolster(OwningCharacter.Get());
+		bHolsterPointReached = true;
+	}
+	else if (Action == EWeaponSwapNotifyAction::DrawTarget && !bPlayingUnequipMontage &&
+		IsValid(Target) && Target->GetConfig().EquipMontage.Get() == Animation)
+	{
+		Target->AttachToHand(OwningCharacter.Get());
+		bDrawPointReached = true;
+	}
+}
+
+void UCombatComponent::OnWeaponSwapMontageEnded(UAnimMontage* Montage, bool bInterrupted, uint64 SwapToken, bool bWasUnequip)
+{
+	if (!bWeaponSwapActive || SwapToken != WeaponSwapToken || !OwningCharacter.IsValid()) return;
+
+	if (bWasUnequip)
+	{
+		AWeaponBase* OldWeapon = WeaponBeingUnequipped.Get();
+		if (!bHolsterPointReached && IsValid(OldWeapon))
+		{
+			OldWeapon->AttachToHolster(OwningCharacter.Get());
+			bHolsterPointReached = true;
+		}
+		PlayEquipMontageOrFinish();
+		return;
+	}
+
+	AWeaponBase* Target = WeaponBeingEquipped.Get();
+	if (!bDrawPointReached && IsValid(Target))
+	{
+		Target->AttachToHand(OwningCharacter.Get());
+		bDrawPointReached = true;
+	}
+	FinishWeaponSwap();
+}
+
+void UCombatComponent::FinishWeaponSwap()
+{
+	if (!bWeaponSwapActive) return;
+	AWeaponBase* Target = WeaponBeingEquipped.Get();
+	if (!IsValid(Target))
+	{
+		// Never leave the state machine locked if a weapon is destroyed during the animation.
+		bWeaponSwapActive = false;
+		WeaponBeingEquipped.Reset();
+		WeaponBeingUnequipped.Reset();
+		SetCombatState(ECombatState::Idle);
+		return;
+	}
+
+	CurrentWeapon = Target;
+	CurrentWeaponType = PendingWeaponType;
+	CurrentWeapon->AttachToHand(OwningCharacter.Get());
+	bWeaponSwapActive = false;
+	bPlayingUnequipMontage = false;
+	WeaponBeingEquipped.Reset();
+	WeaponBeingUnequipped.Reset();
 	ClearInputBuffer();
-	QueuedWeaponSwitch.Reset();
 	OnWeaponSwitched.Broadcast(CurrentWeaponType, CurrentWeapon);
+	SetCombatState(ECombatState::Idle);
+
+	if (QueuedWeaponSwitch.IsSet())
+	{
+		const EWeaponType QueuedType = QueuedWeaponSwitch.GetValue();
+		QueuedWeaponSwitch.Reset();
+		if (QueuedType != CurrentWeaponType) EquipWeapon(QueuedType);
+	}
 }
 
 void UCombatComponent::SwitchToNextWeapon()
 {
-	// Build cycle list of only currently valid spawned weapons
-	TArray<EWeaponType> ValidCycleWeapons;
-	for (const EWeaponType Type : WeaponCycleOrder)
+	TArray<EWeaponType> ValidTypes;
+	for (EWeaponType Type : WeaponCycleOrder)
 	{
-		if (TObjectPtr<AWeaponBase>* WPtr = SpawnedWeapons.Find(Type))
-		{
-			if (IsValid(*WPtr))
-			{
-				ValidCycleWeapons.Add(Type);
-			}
-		}
+		if (IsValid(GetWeapon(Type))) ValidTypes.Add(Type);
 	}
+	if (ValidTypes.IsEmpty()) return;
 
-	if (ValidCycleWeapons.IsEmpty())
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[UCombatComponent::SwitchToNextWeapon] No valid spawned weapons available to cycle!"));
-		return;
-	}
-
-	int32 CurrentIdx = ValidCycleWeapons.IndexOfByKey(CurrentWeaponType);
-	int32 NextIdx = (CurrentIdx != INDEX_NONE) ? ((CurrentIdx + 1) % ValidCycleWeapons.Num()) : 0;
-
-	EquipWeapon(ValidCycleWeapons[NextIdx]);
+	const int32 Index = ValidTypes.IndexOfByKey(CurrentWeaponType);
+	EquipWeapon(ValidTypes[Index == INDEX_NONE ? 0 : (Index + 1) % ValidTypes.Num()]);
 }
 
 AWeaponBase* UCombatComponent::GetWeapon(EWeaponType Type) const
 {
-	if (const TObjectPtr<AWeaponBase>* Found = SpawnedWeapons.Find(Type))
-	{
-		return *Found;
-	}
+	if (const TObjectPtr<AWeaponBase>* Found = SpawnedWeapons.Find(Type)) return Found->Get();
 	return nullptr;
 }
 
 void UCombatComponent::HandleAttackInput()
 {
-	if (!OwningCharacter.IsValid() || !CurrentWeapon) return;
-
+	if (!OwningCharacter.IsValid() || !IsValid(CurrentWeapon) || bWeaponSwapActive) return;
 	UWorld* World = GetWorld();
 	if (!World) return;
 
-	// CASE 1: IDLE or RECOVERING -> Start a fresh combo
 	if (CurrentCombatState == ECombatState::Idle || CurrentCombatState == ECombatState::Recovering)
 	{
 		LastAttackInputTimestamp = World->GetTimeSeconds();
@@ -189,132 +294,150 @@ void UCombatComponent::HandleAttackInput()
 		return;
 	}
 
-	// CASE 2: Attack is already active
-	if (CurrentCombatState == ECombatState::Attacking || CurrentCombatState == ECombatState::ComboWindow)
-	{
-		// STRICT BUFFER POLICY: If a transition was already committed for this window,
-		// DISCARD extra inputs completely to prevent skipping future sections!
-		if (bTransitionCommittedForWindow)
-		{
-			UE_LOG(LogTemp, Verbose, TEXT("[UCombatComponent] Extra attack input discarded: Transition already committed for current window."));
-			return;
-		}
+	if (CurrentCombatState != ECombatState::Attacking && CurrentCombatState != ECombatState::ComboWindow) return;
+	if (bTransitionCommittedForWindow) return;
 
-		// If combo window is open right now, try queuing transition immediately
-		if (bComboWindowOpen)
-		{
-			LastAttackInputTimestamp = World->GetTimeSeconds();
-			bHasBufferedAttackInput = true;
-			TryQueueSectionTransition();
-		}
-		else
-		{
-			// Early input before window opens: buffer it
-			LastAttackInputTimestamp = World->GetTimeSeconds();
-			bHasBufferedAttackInput = true;
-			UE_LOG(LogTemp, Verbose, TEXT("[UCombatComponent] Early attack input buffered."));
-		}
-	}
+	LastAttackInputTimestamp = World->GetTimeSeconds();
+	bHasBufferedAttackInput = true;
+	if (bComboWindowOpen) TryQueueComboTransition();
 }
 
 bool UCombatComponent::StartNewCombo()
 {
-	if (!CurrentWeapon) return false;
-
-	UAnimMontage* Montage = CurrentWeapon->GetComboMontage();
-	if (!Montage || Montage->CompositeSections.IsEmpty())
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[UCombatComponent] Weapon has no valid montage or sections!"));
-		ClearInputBuffer();
-		return false;
-	}
-
-	UAnimInstance* AnimInstance = OwningCharacter->GetMesh() ? OwningCharacter->GetMesh()->GetAnimInstance() : nullptr;
-	if (!AnimInstance) return false;
-
-	// Safely retire any ongoing attack first, stopping active montage playback and canceling traces
+	if (!IsValid(CurrentWeapon) || !OwningCharacter.IsValid() || !OwningCharacter->GetMesh()) return false;
+	const FWeaponConfig& Config = CurrentWeapon->GetConfig();
 	StopActiveAttack(true, true, 0.1f);
-
-	// Increment and set generation token for this new attack instance
-	ActiveAttackToken = ++CurrentAttackToken;
-
-	TotalSectionsInMontage = Montage->CompositeSections.Num();
-	ActiveSectionIndex = 0;
+	ActiveAttackWeapon = CurrentWeapon;
+	ActiveAttackIndex = 0;
+	PendingAttackIndex = INDEX_NONE;
+	ActiveSectionIndex = INDEX_NONE;
 	PendingSectionIndex = INDEX_NONE;
 	bComboWindowOpen = false;
 	bTransitionCommittedForWindow = false;
 	ClearInputBuffer();
 
-	FName FirstSection = Montage->GetSectionName(0);
-	ActiveAttackMontage = Montage;
-	ActiveAttackWeapon = CurrentWeapon;
+	if (Config.AttackMontageMode == EAttackMontageMode::IndividualAttackMontages)
+	{
+		if (Config.IndividualAttackMontages.IsEmpty() || !IsValid(Config.IndividualAttackMontages[0]))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[CombatComponent] Individual montage mode requires at least one valid attack montage."));
+			ActiveAttackWeapon.Reset();
+			return false;
+		}
+		return PlayIndividualAttack(0);
+	}
 
-	const float Duration = AnimInstance->Montage_Play(Montage);
+	UAnimMontage* Montage = Config.AttackComboMontage;
+	if (!IsValid(Montage) || Montage->CompositeSections.IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[CombatComponent] Single-montage mode requires a montage with sections."));
+		ActiveAttackWeapon.Reset();
+		return false;
+	}
+
+	UAnimInstance* Anim = OwningCharacter->GetMesh()->GetAnimInstance();
+	if (!Anim) return false;
+	ActiveAttackMontage = Montage;
+	ActiveAttackToken = ++CurrentAttackToken;
+	TotalSectionsInMontage = Montage->CompositeSections.Num();
+	ActiveSectionIndex = 0;
+	ActiveAttackIndex = 0;
+	const FName FirstSection = Montage->GetSectionName(0);
+	const float Duration = Anim->Montage_Play(Montage);
 	if (Duration <= 0.0f)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[UCombatComponent] Montage_Play failed on %s!"), *Montage->GetName());
 		StopActiveAttack(true, false);
 		return false;
 	}
 
-	// Bind instance-specific callbacks with generation token to guarantee isolation from stale playbacks
+	const uint64 Token = ActiveAttackToken;
 	FOnMontageEnded EndDelegate;
-	EndDelegate.BindUObject(this, &UCombatComponent::OnMontageInstanceEnded, ActiveAttackToken);
-	AnimInstance->Montage_SetEndDelegate(EndDelegate, Montage);
-
+	EndDelegate.BindUObject(this, &UCombatComponent::OnMontageInstanceEnded, Token);
+	Anim->Montage_SetEndDelegate(EndDelegate, Montage);
 	FOnMontageBlendingOutStarted BlendDelegate;
-	BlendDelegate.BindUObject(this, &UCombatComponent::OnMontageInstanceBlendingOut, ActiveAttackToken);
-	AnimInstance->Montage_SetBlendingOutDelegate(BlendDelegate, Montage);
-
-	FAnimMontageInstance* Instance = AnimInstance->GetActiveInstanceForMontage(Montage);
-	ActiveMontageInstanceId = Instance ? Instance->GetInstanceId() : INDEX_NONE;
-
-	AnimInstance->Montage_JumpToSection(FirstSection, Montage);
-	AnimInstance->Montage_SetNextSection(FirstSection, NAME_None, Montage);
-
+	BlendDelegate.BindUObject(this, &UCombatComponent::OnMontageInstanceBlendingOut, Token);
+	Anim->Montage_SetBlendingOutDelegate(BlendDelegate, Montage);
+	Anim->Montage_JumpToSection(FirstSection, Montage);
+	Anim->Montage_SetNextSection(FirstSection, NAME_None, Montage);
 	SetCombatState(ECombatState::Attacking);
-	OnComboSectionChanged.Broadcast(ActiveSectionIndex, FirstSection);
+	OnComboSectionChanged.Broadcast(0, FirstSection);
 	return true;
+}
+
+bool UCombatComponent::PlayIndividualAttack(int32 AttackIndex)
+{
+	if (!OwningCharacter.IsValid() || !OwningCharacter->GetMesh() || !ActiveAttackWeapon.IsValid()) return false;
+	const TArray<TObjectPtr<UAnimMontage>>& Montages = ActiveAttackWeapon->GetConfig().IndividualAttackMontages;
+	if (!Montages.IsValidIndex(AttackIndex) || !IsValid(Montages[AttackIndex]))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[CombatComponent] No valid montage at individual attack index %d."), AttackIndex);
+		StopActiveAttack(true, false);
+		return false;
+	}
+	UAnimInstance* Anim = OwningCharacter->GetMesh()->GetAnimInstance();
+	if (!Anim) return false;
+
+	ActiveAttackIndex = AttackIndex;
+	PendingAttackIndex = INDEX_NONE;
+	ActiveAttackMontage = Montages[AttackIndex];
+	ActiveSectionIndex = AttackIndex;
+	TotalSectionsInMontage = Montages.Num();
+	PendingSectionIndex = INDEX_NONE;
+	bComboWindowOpen = false;
+	bTransitionCommittedForWindow = false;
+	ActiveAttackToken = ++CurrentAttackToken;
+
+	const float Duration = Anim->Montage_Play(ActiveAttackMontage);
+	if (Duration <= 0.0f)
+	{
+		StopActiveAttack(true, false);
+		return false;
+	}
+	const uint64 Token = ActiveAttackToken;
+	FOnMontageEnded EndDelegate;
+	EndDelegate.BindUObject(this, &UCombatComponent::OnMontageInstanceEnded, Token);
+	Anim->Montage_SetEndDelegate(EndDelegate, ActiveAttackMontage);
+	FOnMontageBlendingOutStarted BlendDelegate;
+	BlendDelegate.BindUObject(this, &UCombatComponent::OnMontageInstanceBlendingOut, Token);
+	Anim->Montage_SetBlendingOutDelegate(BlendDelegate, ActiveAttackMontage);
+	SetCombatState(ECombatState::Attacking);
+	OnComboSectionChanged.Broadcast(AttackIndex, FName(*FString::Printf(TEXT("Attack_%02d"), AttackIndex + 1)));
+	return true;
+}
+
+bool UCombatComponent::TryQueueComboTransition()
+{
+	if (ActiveAttackToken == 0 || !bComboWindowOpen || bTransitionCommittedForWindow) return false;
+	if (!ActiveAttackWeapon.IsValid()) return false;
+
+	const FWeaponConfig& Config = ActiveAttackWeapon->GetConfig();
+	if (Config.AttackMontageMode == EAttackMontageMode::IndividualAttackMontages)
+	{
+		const int32 NextIndex = ActiveAttackIndex + 1;
+		if (!Config.IndividualAttackMontages.IsValidIndex(NextIndex) || !IsValid(Config.IndividualAttackMontages[NextIndex])) return false;
+		PendingAttackIndex = NextIndex;
+		bTransitionCommittedForWindow = true;
+		ClearInputBuffer();
+		return true;
+	}
+	return TryQueueSectionTransition();
 }
 
 bool UCombatComponent::TryQueueSectionTransition()
 {
-	// Enforce single transition per window
-	if (bTransitionCommittedForWindow)
-	{
-		return false;
-	}
-
-	if (!ActiveAttackMontage || ActiveSectionIndex == INDEX_NONE)
-	{
-		return false;
-	}
-
+	if (bTransitionCommittedForWindow || !ActiveAttackMontage || ActiveSectionIndex == INDEX_NONE) return false;
 	const int32 NextIndex = ActiveSectionIndex + 1;
-	if (NextIndex >= TotalSectionsInMontage)
-	{
-		return false; // Reached end of combo chain
-	}
+	if (NextIndex >= TotalSectionsInMontage) return false;
+	UAnimInstance* Anim = OwningCharacter.IsValid() && OwningCharacter->GetMesh() ? OwningCharacter->GetMesh()->GetAnimInstance() : nullptr;
+	if (!Anim) return false;
 
-	UAnimInstance* AnimInstance = OwningCharacter->GetMesh() ? OwningCharacter->GetMesh()->GetAnimInstance() : nullptr;
-	if (!AnimInstance) return false;
-
-	const FName CurrentSecName = ActiveAttackMontage->GetSectionName(ActiveSectionIndex);
-	const FName NextSecName = ActiveAttackMontage->GetSectionName(NextIndex);
-
-	// Dynamically link montage section
-	AnimInstance->Montage_SetNextSection(CurrentSecName, NextSecName, ActiveAttackMontage);
-	AnimInstance->Montage_SetNextSection(NextSecName, NAME_None, ActiveAttackMontage);
-
-	// Keep pending and active section state strictly separate!
-	// ActiveSectionIndex remains unchanged until the animation actually enters NextIndex.
+	const FName CurrentName = ActiveAttackMontage->GetSectionName(ActiveSectionIndex);
+	const FName NextName = ActiveAttackMontage->GetSectionName(NextIndex);
+	Anim->Montage_SetNextSection(CurrentName, NextName, ActiveAttackMontage);
+	Anim->Montage_SetNextSection(NextName, NAME_None, ActiveAttackMontage);
 	PendingSectionIndex = NextIndex;
 	bTransitionCommittedForWindow = true;
 	ClearInputBuffer();
-
-	UE_LOG(LogTemp, Log, TEXT("[UCombatComponent] Transition queued: %s -> %s (Pending index: %d)"),
-		*CurrentSecName.ToString(), *NextSecName.ToString(), PendingSectionIndex);
-
 	return true;
 }
 
@@ -323,227 +446,164 @@ void UCombatComponent::CommitSectionTransition(int32 NewSectionIndex, FName NewS
 	ActiveSectionIndex = NewSectionIndex;
 	PendingSectionIndex = INDEX_NONE;
 	bTransitionCommittedForWindow = false;
-
-	OnComboSectionChanged.Broadcast(ActiveSectionIndex, NewSectionName);
-	UE_LOG(LogTemp, Log, TEXT("[UCombatComponent] Section committed: %s (Active index: %d)"),
-		*NewSectionName.ToString(), ActiveSectionIndex);
+	OnComboSectionChanged.Broadcast(NewSectionIndex, NewSectionName);
 }
 
 void UCombatComponent::NotifySectionEntered(FName SectionName, const UAnimSequenceBase* Animation)
 {
-	if (Animation != ActiveAttackMontage || !ActiveAttackMontage || ActiveAttackToken == 0) return;
-
-	const int32 FoundIndex = ActiveAttackMontage->GetSectionIndex(SectionName);
-	if (FoundIndex == INDEX_NONE) return;
-
-	// Commit section progression when confirmed by notify
-	if (FoundIndex == PendingSectionIndex || (PendingSectionIndex == INDEX_NONE && FoundIndex == ActiveSectionIndex + 1))
+	if (!ActiveAttackWeapon.IsValid() || ActiveAttackWeapon->GetConfig().AttackMontageMode != EAttackMontageMode::SingleComboMontage ||
+		Animation != ActiveAttackMontage || ActiveAttackToken == 0 || !ActiveAttackMontage) return;
+	const int32 Index = ActiveAttackMontage->GetSectionIndex(SectionName);
+	if (Index != INDEX_NONE && (Index == PendingSectionIndex || (PendingSectionIndex == INDEX_NONE && Index == ActiveSectionIndex + 1)))
 	{
-		CommitSectionTransition(FoundIndex, SectionName);
+		CommitSectionTransition(Index, SectionName);
 	}
 }
 
 void UCombatComponent::NotifyComboWindowBegin(const UAnimSequenceBase* Animation)
 {
-	if (Animation != ActiveAttackMontage || ActiveAttackToken == 0) return;
-
-	// Reliable progression confirmation check:
-	// Verify that the AnimInstance has genuinely entered the pending section before advancing state
-	if (PendingSectionIndex != INDEX_NONE && ActiveAttackMontage && OwningCharacter.IsValid() && OwningCharacter->GetMesh())
+	if (Animation != ActiveAttackMontage || ActiveAttackToken == 0 || !ActiveAttackWeapon.IsValid()) return;
+	if (ActiveAttackWeapon->GetConfig().AttackMontageMode == EAttackMontageMode::SingleComboMontage &&
+		PendingSectionIndex != INDEX_NONE && OwningCharacter.IsValid() && OwningCharacter->GetMesh())
 	{
-		if (UAnimInstance* AnimInstance = OwningCharacter->GetMesh()->GetAnimInstance())
+		if (UAnimInstance* Anim = OwningCharacter->GetMesh()->GetAnimInstance())
 		{
-			const FName CurrentPlayingSection = AnimInstance->Montage_GetCurrentSection(ActiveAttackMontage);
-			const int32 CurrentPlayingIndex = ActiveAttackMontage->GetSectionIndex(CurrentPlayingSection);
-
-			// Advance only if the playback is confirmed to have reached the pending section!
-			if (CurrentPlayingIndex == PendingSectionIndex)
-			{
-				CommitSectionTransition(CurrentPlayingIndex, CurrentPlayingSection);
-			}
-			else
-			{
-				UE_LOG(LogTemp, Verbose, TEXT("[UCombatComponent] Section check: Montage currently at '%s' (index %d), pending index is %d. Not advancing."),
-					*CurrentPlayingSection.ToString(), CurrentPlayingIndex, PendingSectionIndex);
-			}
+			const FName CurrentName = Anim->Montage_GetCurrentSection(ActiveAttackMontage);
+			const int32 CurrentIndex = ActiveAttackMontage->GetSectionIndex(CurrentName);
+			if (CurrentIndex == PendingSectionIndex) CommitSectionTransition(CurrentIndex, CurrentName);
 		}
 	}
-
 	bComboWindowOpen = true;
 	bTransitionCommittedForWindow = false;
 	SetCombatState(ECombatState::ComboWindow);
-
-	// Consume buffered input if within expiration window
-	if (bHasBufferedAttackInput && IsInputBufferValid())
-	{
-		TryQueueSectionTransition();
-	}
-	else
-	{
-		ClearInputBuffer();
-	}
+	if (bHasBufferedAttackInput && IsInputBufferValid()) TryQueueComboTransition();
+	else ClearInputBuffer();
 }
 
 void UCombatComponent::NotifyComboWindowEnd(const UAnimSequenceBase* Animation)
 {
 	if (Animation != ActiveAttackMontage || ActiveAttackToken == 0) return;
-
 	bComboWindowOpen = false;
-
-	if (CurrentCombatState == ECombatState::ComboWindow)
-	{
-		SetCombatState(ECombatState::Attacking);
-	}
-
-	// Discard any unconsumed buffered input when window closes
+	if (CurrentCombatState == ECombatState::ComboWindow) SetCombatState(ECombatState::Attacking);
 	ClearInputBuffer();
 
-	// If no transition was committed, ensure the montage will blend out to idle
-	if (!bTransitionCommittedForWindow && ActiveAttackMontage && ActiveSectionIndex != INDEX_NONE)
+	if (ActiveAttackWeapon.IsValid() && ActiveAttackWeapon->GetConfig().AttackMontageMode == EAttackMontageMode::SingleComboMontage &&
+		!bTransitionCommittedForWindow && ActiveAttackMontage && ActiveSectionIndex != INDEX_NONE &&
+		OwningCharacter.IsValid() && OwningCharacter->GetMesh())
 	{
-		if (OwningCharacter.IsValid() && OwningCharacter->GetMesh())
+		if (UAnimInstance* Anim = OwningCharacter->GetMesh()->GetAnimInstance())
 		{
-			if (UAnimInstance* AnimInstance = OwningCharacter->GetMesh()->GetAnimInstance())
-			{
-				const FName CurrentSecName = ActiveAttackMontage->GetSectionName(ActiveSectionIndex);
-				AnimInstance->Montage_SetNextSection(CurrentSecName, NAME_None, ActiveAttackMontage);
-			}
+			Anim->Montage_SetNextSection(ActiveAttackMontage->GetSectionName(ActiveSectionIndex), NAME_None, ActiveAttackMontage);
 		}
 	}
 }
 
+void UCombatComponent::NotifyComboTransitionPoint(const UAnimSequenceBase* Animation)
+{
+	if (Animation != ActiveAttackMontage || ActiveAttackToken == 0 || !ActiveAttackWeapon.IsValid()) return;
+
+	const FWeaponConfig& Config = ActiveAttackWeapon->GetConfig();
+	if (Config.AttackMontageMode != EAttackMontageMode::IndividualAttackMontages ||
+		PendingAttackIndex == INDEX_NONE || !Config.IndividualAttackMontages.IsValidIndex(PendingAttackIndex) ||
+		!IsValid(Config.IndividualAttackMontages[PendingAttackIndex]))
+	{
+		return;
+	}
+
+	const int32 NextIndex = PendingAttackIndex;
+	ActiveAttackWeapon->EndTrace();
+
+	// Invalidate the outgoing playback before Montage_Play interrupts it. Its end/blend
+	// delegates then cannot finish or reset the newly started combo step.
+	ActiveAttackToken = 0;
+	ActiveAttackMontage = nullptr;
+	PlayIndividualAttack(NextIndex);
+}
+
 void UCombatComponent::NotifyMeleeTraceBegin(const UAnimSequenceBase* Animation)
 {
-	if (Animation != ActiveAttackMontage || ActiveAttackToken == 0) return;
-
-	// Always target the weapon that initiated the attack
-	if (ActiveAttackWeapon.IsValid())
-	{
-		ActiveAttackWeapon->BeginTrace();
-	}
+	if (Animation == ActiveAttackMontage && ActiveAttackToken != 0 && ActiveAttackWeapon.IsValid()) ActiveAttackWeapon->BeginTrace();
 }
-
 void UCombatComponent::NotifyMeleeTraceTick(const UAnimSequenceBase* Animation, float FrameDeltaTime)
 {
-	if (Animation != ActiveAttackMontage || ActiveAttackToken == 0) return;
-
-	if (ActiveAttackWeapon.IsValid())
-	{
-		ActiveAttackWeapon->TickTrace();
-	}
+	if (Animation == ActiveAttackMontage && ActiveAttackToken != 0 && ActiveAttackWeapon.IsValid()) ActiveAttackWeapon->TickTrace();
 }
-
 void UCombatComponent::NotifyMeleeTraceEnd(const UAnimSequenceBase* Animation)
 {
-	if (Animation != ActiveAttackMontage || ActiveAttackToken == 0) return;
-
-	if (ActiveAttackWeapon.IsValid())
-	{
-		ActiveAttackWeapon->EndTrace();
-	}
-}
-
-void UCombatComponent::HandleMontageBlendingOut(UAnimMontage* Montage, bool bInterrupted)
-{
-	// Guard against callbacks during internal StopActiveAttack or from stale attack tokens
-	if (bIsStoppingAttack || Montage != ActiveAttackMontage || ActiveAttackToken == 0) return;
-
-	SetCombatState(ECombatState::Recovering);
-
-	// Always terminate trace on blending out
-	if (ActiveAttackWeapon.IsValid())
-	{
-		ActiveAttackWeapon->EndTrace();
-	}
-}
-
-void UCombatComponent::HandleMontageEnded(UAnimMontage* Montage, bool bInterrupted)
-{
-	// Guard against callbacks during internal StopActiveAttack or from stale attack tokens
-	if (bIsStoppingAttack || Montage != ActiveAttackMontage || ActiveAttackToken == 0) return;
-
-	// Montage is already ended on the AnimInstance, so avoid redundant Montage_Stop call
-	StopActiveAttack(bInterrupted, /*bStopMontage=*/false);
-	OnAttackEnded.Broadcast();
-
-	// Process queued weapon switch if one was deferred during the attack
-	if (QueuedWeaponSwitch.IsSet())
-	{
-		const EWeaponType TargetType = QueuedWeaponSwitch.GetValue();
-		QueuedWeaponSwitch.Reset();
-		EquipWeapon(TargetType);
-	}
+	if (Animation == ActiveAttackMontage && ActiveAttackToken != 0 && ActiveAttackWeapon.IsValid()) ActiveAttackWeapon->EndTrace();
 }
 
 void UCombatComponent::OnMontageInstanceBlendingOut(UAnimMontage* Montage, bool bInterrupted, uint64 AttackToken)
 {
-	if (AttackToken != ActiveAttackToken || AttackToken == 0)
-	{
-		UE_LOG(LogTemp, Verbose, TEXT("[UCombatComponent] Stale blending out callback rejected for token %llu (active token: %llu)"), AttackToken, ActiveAttackToken);
-		return;
-	}
-	HandleMontageBlendingOut(Montage, bInterrupted);
+	if (AttackToken != ActiveAttackToken || AttackToken == 0 || Montage != ActiveAttackMontage || bIsStoppingAttack) return;
+	if (ActiveAttackWeapon.IsValid()) ActiveAttackWeapon->EndTrace();
+	if (PendingAttackIndex == INDEX_NONE) SetCombatState(ECombatState::Recovering);
 }
 
 void UCombatComponent::OnMontageInstanceEnded(UAnimMontage* Montage, bool bInterrupted, uint64 AttackToken)
 {
-	if (AttackToken != ActiveAttackToken || AttackToken == 0)
+	if (AttackToken != ActiveAttackToken || AttackToken == 0 || Montage != ActiveAttackMontage || bIsStoppingAttack) return;
+
+	if (!bInterrupted && ActiveAttackWeapon.IsValid() &&
+		ActiveAttackWeapon->GetConfig().AttackMontageMode == EAttackMontageMode::IndividualAttackMontages &&
+		PendingAttackIndex != INDEX_NONE)
 	{
-		UE_LOG(LogTemp, Verbose, TEXT("[UCombatComponent] Stale montage ended callback rejected for token %llu (active token: %llu)"), AttackToken, ActiveAttackToken);
+		const int32 NextIndex = PendingAttackIndex;
+		if (ActiveAttackWeapon.IsValid()) ActiveAttackWeapon->EndTrace();
+		ActiveAttackToken = 0;
+		ActiveAttackMontage = nullptr;
+		PlayIndividualAttack(NextIndex);
 		return;
 	}
-	HandleMontageEnded(Montage, bInterrupted);
+
+	FinishAttack(bInterrupted, false, 0.0f);
+	OnAttackEnded.Broadcast();
+	if (QueuedWeaponSwitch.IsSet())
+	{
+		const EWeaponType Target = QueuedWeaponSwitch.GetValue();
+		QueuedWeaponSwitch.Reset();
+		EquipWeapon(Target);
+	}
+}
+
+void UCombatComponent::FinishAttack(bool bInterrupted, bool bStopMontage, float BlendOutTime)
+{
+	StopActiveAttack(bInterrupted, bStopMontage, BlendOutTime);
 }
 
 void UCombatComponent::ResetCombo()
 {
+	QueuedWeaponSwitch.Reset();
 	StopActiveAttack(true, true, 0.2f);
 }
 
 void UCombatComponent::StopActiveAttack(bool bInterrupted, bool bStopMontage, float BlendOutTime)
 {
-	if (bIsStoppingAttack)
+	if (bIsStoppingAttack) return;
+	TGuardValue<bool> Guard(bIsStoppingAttack, true);
+	ActiveAttackToken = 0; // Invalidate first: Montage_Stop can invoke delegates synchronously.
+
+	if (ActiveAttackWeapon.IsValid()) ActiveAttackWeapon->CancelTrace();
+	UAnimMontage* Montage = ActiveAttackMontage;
+	if (bStopMontage && Montage && OwningCharacter.IsValid() && OwningCharacter->GetMesh())
 	{
-		return;
-	}
-
-	TGuardValue<bool> StoppingGuard(bIsStoppingAttack, true);
-
-	// Invalidate the attack token FIRST so any synchronous callbacks from Montage_Stop are treated as stale
-	const uint64 RetiredToken = ActiveAttackToken;
-	ActiveAttackToken = 0;
-	ActiveMontageInstanceId = INDEX_NONE;
-
-	// Cancel trace on the specific weapon that initiated the attack
-	if (ActiveAttackWeapon.IsValid())
-	{
-		ActiveAttackWeapon->CancelTrace();
-	}
-
-	UAnimMontage* MontageToStop = ActiveAttackMontage;
-
-	// Stop montage playback if requested and still actively playing
-	if (bStopMontage && MontageToStop && OwningCharacter.IsValid() && OwningCharacter->GetMesh())
-	{
-		if (UAnimInstance* AnimInstance = OwningCharacter->GetMesh()->GetAnimInstance())
+		if (UAnimInstance* Anim = OwningCharacter->GetMesh()->GetAnimInstance())
 		{
-			if (AnimInstance->Montage_IsPlaying(MontageToStop))
-			{
-				AnimInstance->Montage_Stop(BlendOutTime, MontageToStop);
-			}
+			if (Anim->Montage_IsPlaying(Montage)) Anim->Montage_Stop(BlendOutTime, Montage);
 		}
 	}
 
-	ActiveAttackWeapon = nullptr;
+	ActiveAttackWeapon.Reset();
 	ActiveAttackMontage = nullptr;
 	ActiveSectionIndex = INDEX_NONE;
 	PendingSectionIndex = INDEX_NONE;
+	ActiveAttackIndex = INDEX_NONE;
+	PendingAttackIndex = INDEX_NONE;
 	TotalSectionsInMontage = 0;
 	bComboWindowOpen = false;
 	bTransitionCommittedForWindow = false;
-
 	ClearInputBuffer();
-	SetCombatState(ECombatState::Idle);
+	if (!bWeaponSwapActive) SetCombatState(ECombatState::Idle);
 }
 
 void UCombatComponent::SetCombatState(ECombatState NewState)
@@ -554,19 +614,14 @@ void UCombatComponent::SetCombatState(ECombatState NewState)
 		OnCombatStateChanged.Broadcast(NewState);
 	}
 }
-
 void UCombatComponent::ClearInputBuffer()
 {
 	bHasBufferedAttackInput = false;
 	LastAttackInputTimestamp = -1.0;
 }
-
 bool UCombatComponent::IsInputBufferValid() const
 {
 	if (!bHasBufferedAttackInput) return false;
-
 	const UWorld* World = GetWorld();
-	if (!World) return false;
-
-	return (World->GetTimeSeconds() - LastAttackInputTimestamp) <= InputBufferDuration;
+	return World && (World->GetTimeSeconds() - LastAttackInputTimestamp) <= InputBufferDuration;
 }

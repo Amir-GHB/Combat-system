@@ -10,22 +10,13 @@
 class AWeaponBase;
 class UAnimMontage;
 class ACharacter;
+class UAnimSequenceBase;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnWeaponSwitchedSignature, EWeaponType, NewWeaponType, AWeaponBase*, NewWeapon);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnComboSectionChangedSignature, int32, SectionIndex, FName, SectionName);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnCombatStateChangedSignature, ECombatState, NewState);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnAttackEndedSignature);
 
-/**
- * Universal Combat Component (UE 5.8 Compatible):
- * - Manages simultaneously owned weapons and safe, deterministic weapon switching.
- * - Robust state machine: Strictly decoupled ActiveSectionIndex vs PendingSectionIndex.
- * - Time-stamped input buffer with automatic expiration and single-transition-per-window policy.
- * - Attack generation tokens & instance IDs to guard against stale montage callbacks.
- * - Dedicated ActiveAttackWeapon tracking ensuring cleanup never targets the wrong weapon.
- * - Safe interruption and reset mechanics that stop active montages without re-entrant recursion.
- * - Dynamic montage section discovery (zero hardcoded section names or counts).
- */
 UCLASS(ClassGroup=(Combat), meta=(BlueprintSpawnableComponent))
 class COMBATSYSTEM_API UCombatComponent : public UActorComponent
 {
@@ -39,15 +30,11 @@ protected:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 public:
-	// -----------------------------------------------------------
-	// Weapon Inventory & Switching
-	// -----------------------------------------------------------
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Weapons")
 	TMap<EWeaponType, TSubclassOf<AWeaponBase>> WeaponClasses;
 
-	/** Explicit deterministic weapon cycle order */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Weapons")
-	TArray<EWeaponType> WeaponCycleOrder = { EWeaponType::Sword, EWeaponType::BullHeadHammer, EWeaponType::Unarmed };
+	TArray<EWeaponType> WeaponCycleOrder = { EWeaponType::Sword, EWeaponType::BullHeadHammer, EWeaponType::Spear, EWeaponType::Bow, EWeaponType::Unarmed };
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Weapons")
 	EWeaponType DefaultWeaponType = EWeaponType::Sword;
@@ -61,9 +48,11 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat|State")
 	EWeaponType CurrentWeaponType = EWeaponType::Unarmed;
 
-	/** If true, weapon switch requests during an attack are queued until the attack finishes */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Weapons")
 	bool bQueueWeaponSwitchDuringAttack = true;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Buffer", meta = (ClampMin = "0.05", ClampMax = "1.0"))
+	float InputBufferDuration = 0.35f;
 
 	UFUNCTION(BlueprintCallable, Category = "Combat|Weapons")
 	void EquipWeapon(EWeaponType NewWeaponType);
@@ -74,28 +63,22 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Combat|Weapons")
 	AWeaponBase* GetWeapon(EWeaponType Type) const;
 
-	// -----------------------------------------------------------
-	// Attack Input & Combo State Machine
-	// -----------------------------------------------------------
-	/** Time window (seconds) during which an attack input remains valid in the buffer */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Buffer", meta = (ClampMin = "0.05", ClampMax = "1.0"))
-	float InputBufferDuration = 0.35f;
-
 	UFUNCTION(BlueprintCallable, Category = "Combat|Attack")
 	void HandleAttackInput();
 
-	/** Called by UAnimNotifyState_ComboWindow */
 	void NotifyComboWindowBegin(const UAnimSequenceBase* Animation);
 	void NotifyComboWindowEnd(const UAnimSequenceBase* Animation);
-
-	/** Called by UAnimNotifyState_MeleeTrace */
+	/** Starts a queued individual-montage combo step at an authored transition frame. */
+	void NotifyComboTransitionPoint(const UAnimSequenceBase* Animation);
 	void NotifyMeleeTraceBegin(const UAnimSequenceBase* Animation);
 	void NotifyMeleeTraceTick(const UAnimSequenceBase* Animation, float FrameDeltaTime);
 	void NotifyMeleeTraceEnd(const UAnimSequenceBase* Animation);
 
-	/** Called by UAnimNotify_SectionEntry when a section actually begins playing */
 	UFUNCTION(BlueprintCallable, Category = "Combat|Combo")
 	void NotifySectionEntered(FName SectionName, const UAnimSequenceBase* Animation);
+
+	/** Called by UAnimNotify_WeaponSwapPoint. */
+	void NotifyWeaponSwapPoint(EWeaponSwapNotifyAction Action, const UAnimSequenceBase* Animation);
 
 	UFUNCTION(BlueprintCallable, Category = "Combat|Attack")
 	void ResetCombo();
@@ -103,17 +86,12 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Combat|Attack")
 	void StopActiveAttack(bool bInterrupted = true, bool bStopMontage = true, float BlendOutTime = 0.2f);
 
-	// -----------------------------------------------------------
-	// State Queries
-	// -----------------------------------------------------------
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat|State")
 	ECombatState CurrentCombatState = ECombatState::Idle;
 
-	/** The section index actively playing on screen */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat|State")
 	int32 ActiveSectionIndex = INDEX_NONE;
 
-	/** The next section index requested and linked, but not yet playing */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat|State")
 	int32 PendingSectionIndex = INDEX_NONE;
 
@@ -121,15 +99,17 @@ public:
 	int32 TotalSectionsInMontage = 0;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat|State")
+	int32 ActiveAttackIndex = INDEX_NONE;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat|State")
+	int32 PendingAttackIndex = INDEX_NONE;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat|State")
 	bool bComboWindowOpen = false;
 
-	/** Guard: exactly one transition accepted per combo window */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat|State")
 	bool bTransitionCommittedForWindow = false;
 
-	// -----------------------------------------------------------
-	// Delegates
-	// -----------------------------------------------------------
 	UPROPERTY(BlueprintAssignable, Category = "Combat|Events")
 	FOnWeaponSwitchedSignature OnWeaponSwitched;
 
@@ -146,49 +126,43 @@ protected:
 	UPROPERTY(Transient)
 	TWeakObjectPtr<ACharacter> OwningCharacter;
 
-	/** Active attack montage asset */
 	UPROPERTY(Transient)
 	TObjectPtr<UAnimMontage> ActiveAttackMontage = nullptr;
 
-	/** Explicit tracking of the weapon that initiated the attack */
 	UPROPERTY(Transient)
 	TWeakObjectPtr<AWeaponBase> ActiveAttackWeapon = nullptr;
 
-	/** Attack generation counter: increments on every new attack */
 	uint64 CurrentAttackToken = 0;
-
-	/** Active attack token currently running; only callbacks matching this token are accepted */
 	uint64 ActiveAttackToken = 0;
-
-	/** Unique instance ID of the active montage playback */
-	int32 ActiveMontageInstanceId = INDEX_NONE;
-
-	/** Guard flag preventing recursive cleanup when Montage_Stop fires callbacks synchronously */
 	bool bIsStoppingAttack = false;
-
-	/** Timestamp of the last valid attack input */
 	double LastAttackInputTimestamp = -1.0;
-
-	/** Flag indicating an attack input is buffered */
 	bool bHasBufferedAttackInput = false;
-
-	/** Queued weapon switch target */
 	TOptional<EWeaponType> QueuedWeaponSwitch;
 
-	/** Montage callbacks */
-	UFUNCTION()
-	void HandleMontageEnded(UAnimMontage* Montage, bool bInterrupted);
+	// Weapon-switch transaction state. Generation tokens reject stale montage callbacks.
+	uint64 WeaponSwapToken = 0;
+	bool bWeaponSwapActive = false;
+	bool bHolsterPointReached = false;
+	bool bDrawPointReached = false;
+	bool bPlayingUnequipMontage = false;
+	EWeaponType PendingWeaponType = EWeaponType::Unarmed;
+	TWeakObjectPtr<AWeaponBase> WeaponBeingUnequipped;
+	TWeakObjectPtr<AWeaponBase> WeaponBeingEquipped;
 
-	UFUNCTION()
-	void HandleMontageBlendingOut(UAnimMontage* Montage, bool bInterrupted);
-
-	/** Instance-specific delegates bound per Montage_Play containing the specific AttackToken */
 	void OnMontageInstanceEnded(UAnimMontage* Montage, bool bInterrupted, uint64 AttackToken);
 	void OnMontageInstanceBlendingOut(UAnimMontage* Montage, bool bInterrupted, uint64 AttackToken);
-
+	void OnWeaponSwapMontageEnded(UAnimMontage* Montage, bool bInterrupted, uint64 SwapToken, bool bWasUnequip);
+	
 	bool StartNewCombo();
+	bool PlayIndividualAttack(int32 AttackIndex);
+	bool TryQueueComboTransition();
 	bool TryQueueSectionTransition();
 	void CommitSectionTransition(int32 NewSectionIndex, FName NewSectionName);
+	void FinishAttack(bool bInterrupted, bool bStopMontage, float BlendOutTime);
+	void BeginWeaponSwap(EWeaponType NewWeaponType);
+	void PlayUnequipMontageOrContinue();
+	void PlayEquipMontageOrFinish();
+	void FinishWeaponSwap();
 	void SetCombatState(ECombatState NewState);
 	void ClearInputBuffer();
 	bool IsInputBufferValid() const;

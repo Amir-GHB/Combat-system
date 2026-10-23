@@ -65,6 +65,14 @@ void AWeaponBase::AttachToHolster(ACharacter* TargetCharacter)
 	OwningCharacter = TargetCharacter;
 	SetOwner(TargetCharacter);
 
+	if (bNoHolster)
+	{
+		// A weapon configured without a holster should not remain floating in the world.
+		DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+		SetWeaponHidden(true);
+		return;
+	}
+
 	AttachToComponent(
 		TargetCharacter->GetMesh(),
 		FAttachmentTransformRules::SnapToTargetIncludingScale,

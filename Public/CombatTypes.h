@@ -18,6 +18,8 @@ enum class EWeaponType : uint8
 	Unarmed        UMETA(DisplayName = "Unarmed / Martial Arts"),
 	Sword          UMETA(DisplayName = "One-Handed / Longsword"),
 	BullHeadHammer UMETA(DisplayName = "Bull Head Hammer"),
+	Spear          UMETA(DisplayName = "Spear"),
+	Bow            UMETA(DisplayName = "Bow (Ranged Placeholder)"),
 	CustomWeapon   UMETA(DisplayName = "Custom Extensible Weapon")
 };
 
@@ -34,6 +36,22 @@ enum class ECombatState : uint8
 	SwappingWeapon UMETA(DisplayName = "Swapping Weapon"),
 	Staggered      UMETA(DisplayName = "Staggered / Hit Stun"),
 	Dead           UMETA(DisplayName = "Dead")
+};
+
+/** Selects whether a weapon uses one sectioned montage or a montage per combo step. */
+UENUM(BlueprintType)
+enum class EAttackMontageMode : uint8
+{
+	SingleComboMontage UMETA(DisplayName = "Single Montage With Sections"),
+	IndividualAttackMontages UMETA(DisplayName = "One Montage Per Combo Step")
+};
+
+/** Notify point used by equip/unequip montages to move weapons between sockets. */
+UENUM(BlueprintType)
+enum class EWeaponSwapNotifyAction : uint8
+{
+	HolsterCurrent UMETA(DisplayName = "Holster Current Weapon"),
+	DrawTarget UMETA(DisplayName = "Draw Target Weapon")
 };
 
 /**
@@ -128,7 +146,23 @@ struct FWeaponConfig : public FTableRowBase
 	FText WeaponDisplayName = FText::FromString(TEXT("Default Weapon"));
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapon|Animation")
+	EAttackMontageMode AttackMontageMode = EAttackMontageMode::SingleComboMontage;
+
+	/** Used only in SingleComboMontage mode; each combo step is a montage section. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapon|Animation", meta = (EditCondition = "AttackMontageMode == EAttackMontageMode::SingleComboMontage"))
 	TObjectPtr<UAnimMontage> AttackComboMontage = nullptr;
+
+	/** Used only in IndividualAttackMontages mode; array order is combo order. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapon|Animation", meta = (EditCondition = "AttackMontageMode == EAttackMontageMode::IndividualAttackMontages"))
+	TArray<TObjectPtr<UAnimMontage>> IndividualAttackMontages;
+
+	/** Played when switching away from this weapon. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapon|Animation")
+	TObjectPtr<UAnimMontage> UnequipMontage = nullptr;
+
+	/** Played when switching to this weapon. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapon|Animation")
+	TObjectPtr<UAnimMontage> EquipMontage = nullptr;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapon|Damage")
 	float BaseDamage = 35.0f;
