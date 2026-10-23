@@ -52,7 +52,7 @@ void AWeapon_Bow::Tick(float DeltaSeconds)
 
 bool AWeapon_Bow::BeginDraw()
 {
-	if (bIsDrawing || !IsValid(ProjectileClass) || !GetWorld()) return false;
+	if (bIsDrawing || !GetWorld()) return false;
 
 	bIsDrawing = true;
 	DrawAlpha = 0.0f;
