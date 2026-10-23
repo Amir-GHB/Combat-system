@@ -74,6 +74,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Combat|Ranged")
 	void CancelAttackInput();
 
+	/** Returns the current animation snapshot, including live bow draw strength. */
+	UFUNCTION(BlueprintPure, Category = "Combat|Animation")
+	FCombatAnimationState GetAnimationState() const;
+
+	/** Animation-only override for entering/leaving a noncombat stance. Does not change weapon inventory. */
+	UFUNCTION(BlueprintCallable, Category = "Combat|Animation")
+	void SetNonCombatAnimation(bool bEnableNonCombatAnimation);
+
 	void NotifyComboWindowBegin(const UAnimSequenceBase* Animation);
 	void NotifyComboWindowEnd(const UAnimSequenceBase* Animation);
 	/** Starts a queued individual-montage combo step at an authored transition frame. */
@@ -154,6 +162,11 @@ protected:
 	bool bDrawPointReached = false;
 	bool bPlayingUnequipMontage = false;
 	EWeaponType PendingWeaponType = EWeaponType::Unarmed;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Combat|Animation")
+	FCombatAnimationState AnimationState;
+
+	bool bForceNonCombatAnimation = false;
 	TWeakObjectPtr<AWeaponBase> WeaponBeingUnequipped;
 	TWeakObjectPtr<AWeaponBase> WeaponBeingEquipped;
 
@@ -172,6 +185,7 @@ protected:
 	void PlayEquipMontageOrFinish();
 	void FinishWeaponSwap();
 	void SetCombatState(ECombatState NewState);
+	void RefreshAnimationState();
 	void ClearInputBuffer();
 	bool IsInputBufferValid() const;
 };
