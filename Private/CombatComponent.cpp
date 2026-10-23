@@ -144,6 +144,7 @@ void UCombatComponent::PlayUnequipMontageOrContinue()
 	}
 
 	bPlayingUnequipMontage = true;
+	RefreshAnimationState();
 	const uint64 Token = WeaponSwapToken;
 	const float Duration = Anim->Montage_Play(Montage);
 	if (Duration <= 0.0f)
@@ -177,6 +178,7 @@ void UCombatComponent::PlayEquipMontageOrFinish()
 	}
 
 	bPlayingUnequipMontage = false;
+	RefreshAnimationState();
 	const uint64 Token = WeaponSwapToken;
 	const float Duration = Anim->Montage_Play(Montage);
 	if (Duration <= 0.0f)
@@ -649,11 +651,87 @@ void UCombatComponent::StopActiveAttack(bool bInterrupted, bool bStopMontage, fl
 
 void UCombatComponent::SetCombatState(ECombatState NewState)
 {
-	if (CurrentCombatState != NewState)
+	const bool bChanged = CurrentCombatState != NewState;
+	if (bChanged)
 	{
 		CurrentCombatState = NewState;
 		OnCombatStateChanged.Broadcast(NewState);
 	}
+	if (bChanged) RefreshAnimationState();
+}
+
+FCombatAnimationState UCombatComponent::GetAnimationState() const
+{
+	FCombatAnimationState Snapshot = AnimationState;
+	if (const AWeapon_Bow* Bow = Cast<AWeapon_Bow>(CurrentWeapon))
+	{
+		Snapshot.bIsDrawingBow = Bow->bIsDrawing;
+		Snapshot.BowDrawAlpha = Bow->GetDrawAlpha();
+	}
+	else
+	{
+		Snapshot.bIsDrawingBow = false;
+		Snapshot.BowDrawAlpha = 0.0f;
+	}
+	return Snapshot;
+}
+
+void UCombatComponent::SetNonCombatAnimation(bool bEnableNonCombatAnimation)
+{
+	if (bForceNonCombatAnimation == bEnableNonCombatAnimation) return;
+	bForceNonCombatAnimation = bEnableNonCombatAnimation;
+	RefreshAnimationState();
+}
+
+void UCombatComponent::RefreshAnimationState()
+{
+	const EWeaponType EffectiveWeaponType = (bWeaponSwapActive && ((bHolsterPointReached && !bPlayingUnequipMontage) || !IsValid(CurrentWeapon))) ? PendingWeaponType : CurrentWeaponType;
+	AnimationState.WeaponType = EffectiveWeaponType;
+	AnimationState.CombatState = CurrentCombatState;
+	AnimationState.bWeaponTransitionActive = bWeaponSwapActive;
+
+	if (bForceNonCombatAnimation || (!IsValid(CurrentWeapon) && !bWeaponSwapActive))
+	{
+		AnimationState.Style = ECombatAnimationStyle::NonCombat;
+	}
+	else
+	{
+		switch (EffectiveWeaponType)
+		{
+		case EWeaponType::Unarmed: AnimationState.Style = ECombatAnimationStyle::Unarmed; break;
+		case EWeaponType::Sword: AnimationState.Style = ECombatAnimationStyle::Sword; break;
+		case EWeaponType::BullHeadHammer: AnimationState.Style = ECombatAnimationStyle::Hammer; break;
+		case EWeaponType::Spear: AnimationState.Style = ECombatAnimationStyle::Spear; break;
+		case EWeaponType::Bow: AnimationState.Style = ECombatAnimationStyle::Bow; break;
+		default: AnimationState.Style = ECombatAnimationStyle::Custom; break;
+		}
+	}
+
+	switch (CurrentCombatState)
+	{
+	case ECombatState::DrawingBow:
+		AnimationState.Action = ECombatAnimationAction::Drawing;
+		break;
+	case ECombatState::Attacking:
+	case ECombatState::ComboWindow:
+	case ECombatState::Recovering:
+		AnimationState.Action = ECombatAnimationAction::Attacking;
+		break;
+	case ECombatState::Staggered:
+		AnimationState.Action = ECombatAnimationAction::Staggered;
+		break;
+	case ECombatState::Dead:
+		AnimationState.Action = ECombatAnimationAction::Dead;
+		break;
+	case ECombatState::SwappingWeapon:
+		AnimationState.Action = bPlayingUnequipMontage ? ECombatAnimationAction::Unequipping : ECombatAnimationAction::Equipping;
+		break;
+	default:
+		AnimationState.Action = ECombatAnimationAction::None;
+		break;
+	}
+
+	++AnimationState.Revision;
 }
 void UCombatComponent::ClearInputBuffer()
 {

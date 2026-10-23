@@ -40,6 +40,64 @@ enum class ECombatState : uint8
 	DrawingBow     UMETA(DisplayName = "Drawing Bow")
 };
 
+/** Shared animation stance selected from the currently equipped weapon. */
+UENUM(BlueprintType)
+enum class ECombatAnimationStyle : uint8
+{
+	NonCombat UMETA(DisplayName = "Noncombat"),
+	Unarmed   UMETA(DisplayName = "Unarmed"),
+	Sword     UMETA(DisplayName = "Sword"),
+	Hammer    UMETA(DisplayName = "Hammer"),
+	Spear     UMETA(DisplayName = "Spear"),
+	Bow       UMETA(DisplayName = "Bow"),
+	Custom    UMETA(DisplayName = "Custom")
+};
+
+/** Shared action label for AnimBP transitions. */
+UENUM(BlueprintType)
+enum class ECombatAnimationAction : uint8
+{
+	None       UMETA(DisplayName = "None"),
+	Equipping  UMETA(DisplayName = "Equipping"),
+	Unequipping UMETA(DisplayName = "Unequipping"),
+	Attacking  UMETA(DisplayName = "Attacking"),
+	Drawing    UMETA(DisplayName = "Drawing"),
+	Staggered  UMETA(DisplayName = "Staggered"),
+	Dead       UMETA(DisplayName = "Dead")
+};
+
+/** One compact animation-facing snapshot shared by the Combat Component and AnimInstance. */
+USTRUCT(BlueprintType)
+struct FCombatAnimationState
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Combat Animation")
+	ECombatAnimationStyle Style = ECombatAnimationStyle::NonCombat;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Combat Animation")
+	ECombatAnimationAction Action = ECombatAnimationAction::None;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Combat Animation")
+	EWeaponType WeaponType = EWeaponType::Unarmed;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Combat Animation")
+	ECombatState CombatState = ECombatState::Idle;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Combat Animation")
+	bool bWeaponTransitionActive = false;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Combat Animation")
+	bool bIsDrawingBow = false;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Combat Animation")
+	float BowDrawAlpha = 0.0f;
+
+	/** Incremented on meaningful state transitions; useful for transition events and debugging. */
+	UPROPERTY(BlueprintReadOnly, Category = "Combat Animation")
+	int32 Revision = 0;
+};
+
 /** Selects whether a weapon uses one sectioned montage or a montage per combo step. */
 UENUM(BlueprintType)
 enum class EAttackMontageMode : uint8

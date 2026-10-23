@@ -86,6 +86,25 @@ The trace state is controlled by AnimNotifyState_MeleeTrace. Ensure the selected
 
 The projectile routes hits through **DamageHandlerComponent** when available and falls back to Unreal's TakeDamage path otherwise. The projectile is destroyed on impact or when its configured lifetime expires. No ammo/inventory system is included in this first pass.
 
-## 7. Montage callback lifecycle fix
+## 7. Centralized AnimBP state integration
+
+The shared animation state is produced by the Combat Component and exposed automatically to AnimBPs that use the **CombatAnimInstance** base class.
+
+1. Open your character's Animation Blueprint and choose **Class Settings**.
+2. Set **Parent Class** to **CombatAnimInstance**. Do this once per AnimBP. If your AnimBP already inherits from a custom C++ AnimInstance class, integrate the same state getter into that class instead of replacing your existing parent.
+3. Use the inherited **CombatAnimationState** struct in transition rules:
+   - **Style**: NonCombat, Unarmed, Sword, Hammer, Spear, Bow, or Custom.
+   - **Action**: None, Equipping, Unequipping, Attacking, Drawing, Staggered, or Dead.
+   - **WeaponType** and **CombatState** retain the underlying gameplay identities.
+   - **bWeaponTransitionActive** marks the weapon-switch transaction.
+   - **bIsDrawingBow** and **BowDrawAlpha** expose the current bow draw state.
+4. Use **GroundSpeed**, **bIsMoving**, **bIsFalling**, and **bIsAccelerating** for shared locomotion. These values update automatically, so the AnimBP does not need its own Event Blueprint Update Animation graph just to read them.
+5. Build the shared stance/action transition logic once. A weapon switch updates the same state variables for every weapon; adding another weapon normally means mapping its type to a style and assigning its animation assets, not duplicating transition plumbing.
+6. **OnCombatAnimationStateChanged** is an optional event for one-time reactions to state changes. It does not fire every frame.
+7. Call **SetNonCombatAnimation(true/false)** on the Combat Component to override the animation style to/from **NonCombat**. This is an animation-only override; it does not holster or change the equipped weapon.
+
+The C++ base class supplies the data and state-change event, not a prebuilt animation graph. You still author your shared state machine and assign your project's poses/montages once. After that, normal weapon-style transitions use the centralized model.
+
+## 8. Montage callback lifecycle fix
 
 The component intentionally does **not** bind global UAnimInstance::OnMontageEnded or OnMontageBlendingOut listeners. It uses delegates bound to each montage playback and validates callbacks with an attack generation token. It does not use FAnimMontageInstance::GetInstanceId() or an ActiveMontageInstanceId field, which avoids the UE 5.8 compile issue and prevents stale global callbacks from resetting a newer attack.
