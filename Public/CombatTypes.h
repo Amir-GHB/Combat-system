@@ -18,6 +18,8 @@ enum class EWeaponType : uint8
 	Unarmed        UMETA(DisplayName = "Unarmed / Martial Arts"),
 	Sword          UMETA(DisplayName = "One-Handed / Longsword"),
 	BullHeadHammer UMETA(DisplayName = "Bull Head Hammer"),
+	Spear          UMETA(DisplayName = "Spear"),
+	Bow            UMETA(DisplayName = "Bow (Ranged Placeholder)"),
 	CustomWeapon   UMETA(DisplayName = "Custom Extensible Weapon")
 };
 
