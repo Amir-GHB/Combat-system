@@ -34,7 +34,7 @@ public:
 	TMap<EWeaponType, TSubclassOf<AWeaponBase>> WeaponClasses;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Weapons")
-	TArray<EWeaponType> WeaponCycleOrder = { EWeaponType::Sword, EWeaponType::BullHeadHammer, EWeaponType::Unarmed };
+	TArray<EWeaponType> WeaponCycleOrder = { EWeaponType::Sword, EWeaponType::BullHeadHammer, EWeaponType::Spear, EWeaponType::Bow, EWeaponType::Unarmed };
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Weapons")
 	EWeaponType DefaultWeaponType = EWeaponType::Sword;
@@ -68,6 +68,8 @@ public:
 
 	void NotifyComboWindowBegin(const UAnimSequenceBase* Animation);
 	void NotifyComboWindowEnd(const UAnimSequenceBase* Animation);
+	/** Starts a queued individual-montage combo step at an authored transition frame. */
+	void NotifyComboTransitionPoint(const UAnimSequenceBase* Animation);
 	void NotifyMeleeTraceBegin(const UAnimSequenceBase* Animation);
 	void NotifyMeleeTraceTick(const UAnimSequenceBase* Animation, float FrameDeltaTime);
 	void NotifyMeleeTraceEnd(const UAnimSequenceBase* Animation);
