@@ -78,7 +78,7 @@ The trace state is controlled by AnimNotifyState_MeleeTrace. Ensure the selected
 5. The attack input's **Started** event begins drawing, **Completed** releases a shot, and **Canceled** cancels without firing. A weapon switch during a draw also cancels the draw.
 6. Use **Full Draw Time** to define charge duration. **Allow Quick Shot** permits a tap to fire at low charge; otherwise, releasing before **Minimum Draw Time** cancels the shot.
 7. In the bow skeletal mesh's AnimBP/Control Rig, read the owning **Weapon_Bow** actor's **DrawAlpha** (0..1) to drive the rigged string and bow limbs. **bIsDrawing** indicates whether the player is currently holding the draw.
-8. Configure **Projectile Class** and **Projectile Config**. Projectile settings include speed, gravity, radius, lifetime, damage, and falloff mode:
+8. Configure **Projectile Class** and **Projectile Config**. Assign an arrow mesh to the projectile Blueprint's optional **Projectile Visual** component. Projectile settings include speed, gravity, radius, lifetime, damage, and falloff mode:
    - **No Falloff** keeps damage constant over distance.
    - **Linear Falloff** interpolates from full damage at **Falloff Start Distance** to **Minimum Damage Multiplier** at **Falloff End Distance**.
    - **Curve Falloff** samples **Falloff Curve** using normalized distance from 0 at falloff start to 1 at falloff end.
