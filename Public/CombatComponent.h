@@ -150,10 +150,9 @@ protected:
 	void OnMontageInstanceEnded(UAnimMontage* Montage, bool bInterrupted, uint64 AttackToken);
 	void OnMontageInstanceBlendingOut(UAnimMontage* Montage, bool bInterrupted, uint64 AttackToken);
 	void OnWeaponSwapMontageEnded(UAnimMontage* Montage, bool bInterrupted, uint64 SwapToken, bool bWasUnequip);
-	void OnWeaponSwapMontageBlendingOut(UAnimMontage* Montage, bool bInterrupted, uint64 SwapToken, bool bWasUnequip);
-
+	
 	bool StartNewCombo();
-	bool PlayIndividualAttack(int32 AttackIndex, bool bFirstAttack);
+	bool PlayIndividualAttack(int32 AttackIndex);
 	bool TryQueueComboTransition();
 	bool TryQueueSectionTransition();
 	void CommitSectionTransition(int32 NewSectionIndex, FName NewSectionName);
