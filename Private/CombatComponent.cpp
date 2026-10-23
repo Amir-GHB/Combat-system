@@ -188,13 +188,13 @@ void UCombatComponent::NotifyWeaponSwapPoint(EWeaponSwapNotifyAction Action, con
 	AWeaponBase* Target = WeaponBeingEquipped.Get();
 
 	if (Action == EWeaponSwapNotifyAction::HolsterCurrent && bPlayingUnequipMontage &&
-		IsValid(OldWeapon) && OldWeapon->GetConfig().UnequipMontage == Animation)
+		IsValid(OldWeapon) && OldWeapon->GetConfig().UnequipMontage.Get() == Animation)
 	{
 		OldWeapon->AttachToHolster(OwningCharacter.Get());
 		bHolsterPointReached = true;
 	}
 	else if (Action == EWeaponSwapNotifyAction::DrawTarget && !bPlayingUnequipMontage &&
-		IsValid(Target) && Target->GetConfig().EquipMontage == Animation)
+		IsValid(Target) && Target->GetConfig().EquipMontage.Get() == Animation)
 	{
 		Target->AttachToHand(OwningCharacter.Get());
 		bDrawPointReached = true;
@@ -321,7 +321,7 @@ bool UCombatComponent::StartNewCombo()
 			ActiveAttackWeapon.Reset();
 			return false;
 		}
-		return PlayIndividualAttack(0, true);
+		return PlayIndividualAttack(0);
 	}
 
 	UAnimMontage* Montage = Config.AttackComboMontage;
@@ -361,7 +361,7 @@ bool UCombatComponent::StartNewCombo()
 	return true;
 }
 
-bool UCombatComponent::PlayIndividualAttack(int32 AttackIndex, bool bFirstAttack)
+bool UCombatComponent::PlayIndividualAttack(int32 AttackIndex)
 {
 	if (!OwningCharacter.IsValid() || !OwningCharacter->GetMesh() || !ActiveAttackWeapon.IsValid()) return false;
 	const TArray<TObjectPtr<UAnimMontage>>& Montages = ActiveAttackWeapon->GetConfig().IndividualAttackMontages;
@@ -527,7 +527,7 @@ void UCombatComponent::OnMontageInstanceEnded(UAnimMontage* Montage, bool bInter
 		if (ActiveAttackWeapon.IsValid()) ActiveAttackWeapon->EndTrace();
 		ActiveAttackToken = 0;
 		ActiveAttackMontage = nullptr;
-		PlayIndividualAttack(NextIndex, false);
+		PlayIndividualAttack(NextIndex);
 		return;
 	}
 
