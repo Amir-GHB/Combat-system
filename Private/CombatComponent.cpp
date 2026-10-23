@@ -105,6 +105,7 @@ void UCombatComponent::BeginWeaponSwap(EWeaponType NewWeaponType)
 	bWeaponSwapActive = true;
 	bHolsterPointReached = false;
 	bDrawPointReached = false;
+	bPlayingUnequipMontage = false;
 	++WeaponSwapToken;
 	SetCombatState(ECombatState::SwappingWeapon);
 
@@ -121,7 +122,8 @@ void UCombatComponent::PlayUnequipMontageOrContinue()
 	UAnimMontage* Montage = IsValid(OldWeapon) ? OldWeapon->GetConfig().UnequipMontage : nullptr;
 	UAnimInstance* Anim = OwningCharacter.IsValid() && OwningCharacter->GetMesh() ? OwningCharacter->GetMesh()->GetAnimInstance() : nullptr;
 
-	if (!IsValid(OldWeapon) || !Montage || !Anim)
+	// Per-weapon fast-switch option: skip only the outgoing weapon's unequip montage.
+	if (!IsValid(OldWeapon) || !OldWeapon->bPlayUnequipMontageOnSwitch || !Montage || !Anim)
 	{
 		if (IsValid(OldWeapon) && OwningCharacter.IsValid())
 		{
@@ -244,6 +246,7 @@ void UCombatComponent::FinishWeaponSwap()
 	CurrentWeaponType = PendingWeaponType;
 	CurrentWeapon->AttachToHand(OwningCharacter.Get());
 	bWeaponSwapActive = false;
+	bPlayingUnequipMontage = false;
 	WeaponBeingEquipped.Reset();
 	WeaponBeingUnequipped.Reset();
 	ClearInputBuffer();
@@ -493,6 +496,28 @@ void UCombatComponent::NotifyComboWindowEnd(const UAnimSequenceBase* Animation)
 			Anim->Montage_SetNextSection(ActiveAttackMontage->GetSectionName(ActiveSectionIndex), NAME_None, ActiveAttackMontage);
 		}
 	}
+}
+
+void UCombatComponent::NotifyComboTransitionPoint(const UAnimSequenceBase* Animation)
+{
+	if (Animation != ActiveAttackMontage || ActiveAttackToken == 0 || !ActiveAttackWeapon.IsValid()) return;
+
+	const FWeaponConfig& Config = ActiveAttackWeapon->GetConfig();
+	if (Config.AttackMontageMode != EAttackMontageMode::IndividualAttackMontages ||
+		PendingAttackIndex == INDEX_NONE || !Config.IndividualAttackMontages.IsValidIndex(PendingAttackIndex) ||
+		!IsValid(Config.IndividualAttackMontages[PendingAttackIndex]))
+	{
+		return;
+	}
+
+	const int32 NextIndex = PendingAttackIndex;
+	ActiveAttackWeapon->EndTrace();
+
+	// Invalidate the outgoing playback before Montage_Play interrupts it. Its end/blend
+	// delegates then cannot finish or reset the newly started combo step.
+	ActiveAttackToken = 0;
+	ActiveAttackMontage = nullptr;
+	PlayIndividualAttack(NextIndex);
 }
 
 void UCombatComponent::NotifyMeleeTraceBegin(const UAnimSequenceBase* Animation)
