@@ -34,10 +34,10 @@ enum class ECombatState : uint8
 	Attacking      UMETA(DisplayName = "Attacking"),
 	ComboWindow    UMETA(DisplayName = "Combo Window Active"),
 	Recovering     UMETA(DisplayName = "Recovering / Blend Out"),
-	DrawingBow     UMETA(DisplayName = "Drawing Bow"),
 	SwappingWeapon UMETA(DisplayName = "Swapping Weapon"),
 	Staggered      UMETA(DisplayName = "Staggered / Hit Stun"),
-	Dead           UMETA(DisplayName = "Dead")
+	Dead           UMETA(DisplayName = "Dead"),
+	DrawingBow     UMETA(DisplayName = "Drawing Bow")
 };
 
 /** Selects whether a weapon uses one sectioned montage or a montage per combo step. */
