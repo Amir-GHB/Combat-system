@@ -8,6 +8,8 @@
 #include "CombatProjectile.generated.h"
 
 class USphereComponent;
+class UStaticMeshComponent;
+class UPrimitiveComponent;
 class UProjectileMovementComponent;
 class AWeaponBase;
 
@@ -25,6 +27,10 @@ public:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Projectile")
 	TObjectPtr<UProjectileMovementComponent> ProjectileMovement;
+
+	/** Optional visual mesh. Assign an arrow mesh in a projectile Blueprint; collision remains on CollisionSphere. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Projectile")
+	TObjectPtr<UStaticMeshComponent> ProjectileVisual;
 
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Projectile")
 	FProjectileConfig ProjectileConfig;
