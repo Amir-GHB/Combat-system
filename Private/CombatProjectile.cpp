@@ -2,6 +2,7 @@
 
 #include "CombatProjectile.h"
 #include "Components/SphereComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "GameFramework/ProjectileMovementComponent.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/Pawn.h"
@@ -23,6 +24,11 @@ ACombatProjectile::ACombatProjectile()
 	CollisionSphere->SetCollisionResponseToAllChannels(ECR_Block);
 	CollisionSphere->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
 	CollisionSphere->SetGenerateOverlapEvents(false);
+
+	ProjectileVisual = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ProjectileVisual"));
+	ProjectileVisual->SetupAttachment(CollisionSphere);
+	ProjectileVisual->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	ProjectileVisual->SetGenerateOverlapEvents(false);
 
 	ProjectileMovement = CreateDefaultSubobject<UProjectileMovementComponent>(TEXT("ProjectileMovement"));
 	ProjectileMovement->UpdatedComponent = CollisionSphere;
