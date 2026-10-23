@@ -6,6 +6,7 @@
 #include "Animation/AnimMontage.h"
 #include "Engine/World.h"
 #include "WeaponBase.h"
+#include "Weapons/Weapon_Bow.h"
 
 UCombatComponent::UCombatComponent()
 {
@@ -45,6 +46,7 @@ void UCombatComponent::BeginPlay()
 
 void UCombatComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	if (AWeapon_Bow* Bow = Cast<AWeapon_Bow>(CurrentWeapon)) Bow->CancelDraw();
 	StopActiveAttack(true, true, 0.0f);
 	if (bWeaponSwapActive && OwningCharacter.IsValid() && OwningCharacter->GetMesh())
 	{
@@ -61,6 +63,13 @@ void UCombatComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 void UCombatComponent::EquipWeapon(EWeaponType NewWeaponType)
 {
 	if (!OwningCharacter.IsValid()) return;
+
+	// A weapon change interrupts an in-progress bow draw without releasing a shot.
+	if (CurrentCombatState == ECombatState::DrawingBow)
+	{
+		if (AWeapon_Bow* DrawingBow = Cast<AWeapon_Bow>(CurrentWeapon)) DrawingBow->CancelDraw();
+		SetCombatState(ECombatState::Idle);
+	}
 
 	if (CurrentCombatState == ECombatState::Attacking || CurrentCombatState == ECombatState::ComboWindow ||
 		CurrentCombatState == ECombatState::Recovering)
@@ -283,6 +292,17 @@ AWeaponBase* UCombatComponent::GetWeapon(EWeaponType Type) const
 void UCombatComponent::HandleAttackInput()
 {
 	if (!OwningCharacter.IsValid() || !IsValid(CurrentWeapon) || bWeaponSwapActive) return;
+
+	// Ranged weapons use Started/Completed input events so holding and releasing are distinct.
+	if (AWeapon_Bow* Bow = Cast<AWeapon_Bow>(CurrentWeapon))
+	{
+		if (CurrentCombatState == ECombatState::Idle || CurrentCombatState == ECombatState::Recovering)
+		{
+			if (Bow->BeginDraw()) SetCombatState(ECombatState::DrawingBow);
+		}
+		return;
+	}
+
 	UWorld* World = GetWorld();
 	if (!World) return;
 
@@ -300,6 +320,27 @@ void UCombatComponent::HandleAttackInput()
 	LastAttackInputTimestamp = World->GetTimeSeconds();
 	bHasBufferedAttackInput = true;
 	if (bComboWindowOpen) TryQueueComboTransition();
+}
+
+
+void UCombatComponent::HandleAttackReleased()
+{
+	if (CurrentCombatState != ECombatState::DrawingBow) return;
+	if (AWeapon_Bow* Bow = Cast<AWeapon_Bow>(CurrentWeapon))
+	{
+		Bow->ReleaseShot();
+	}
+	SetCombatState(ECombatState::Idle);
+}
+
+void UCombatComponent::CancelAttackInput()
+{
+	if (CurrentCombatState != ECombatState::DrawingBow) return;
+	if (AWeapon_Bow* Bow = Cast<AWeapon_Bow>(CurrentWeapon))
+	{
+		Bow->CancelDraw();
+	}
+	SetCombatState(ECombatState::Idle);
 }
 
 bool UCombatComponent::StartNewCombo()
